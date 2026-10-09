@@ -320,3 +320,50 @@ TECH_JOB_CUTS_YTD_AUG = {"value": 155126, "yoy_pct": 52}
 LABOR_SHARE = {"value": 52.9, "quarter": "Q2 2026", "note": "Lowest since 1947 (BLS nonfarm business)",
                "source": ("AI2Work on BLS productivity release (Aug 6, 2026)",
                           "https://ai2.work/blog/ai-capex-delivered-half-of-us-gdp-growth-in-the-second-quarter")}
+
+# ---------------------------------------------------------------------------
+# AI revenue vs capex (Leading signals)
+# Hyperscalers don't report "AI revenue" separately; cloud segments are where AI demand is booked.
+# Quarters are calendar quarters (Microsoft's fiscal quarters end in the same months). $B.
+# ---------------------------------------------------------------------------
+CLOUD_SOURCES = [
+    ("Amazon quarterly results (AWS segment sales)", "https://www.businesswire.com/news/home/20260204777163/en/Amazon.com-Announces-Fourth-Quarter-Results"),
+    ("Amazon Q1 2026 results", "https://www.nasdaq.com/press-release/amazoncom-announces-first-quarter-results-2026-04-29"),
+    ("Alphabet Q1 2026 results (Google Cloud)", "https://www.sec.gov/Archives/edgar/data/0001652044/000165204426000043/googexhibit991q12026.htm"),
+    ("Microsoft Cloud, Q2 FY26 (Business Today)", "https://www.businesstoday.in/amp/technology/news/story/microsoft-cloud-surpasses-50-billion-milestone-amid-global-ai-surge-profits-up-in-q2-26-513417-2026-01-29"),
+    ("Microsoft Q4 FY26 (The Next Platform)", "https://www.nextplatform.com/cloud/2026/07/31/ai-dominates-the-microsoft-conversation-but-not-the-companys-business/5281992"),
+    ("Q2 2026 cloud results (FourWeekMBA)", "https://fourweekmba.com/ai-google-cloud-aws-azure-q2-2026-ai-infrastructure/"),
+]
+CLOUD_REVENUE = {
+    # quarter end: {segment: revenue}
+    "2025-06-30": {"AWS": 30.87, "Google Cloud": 13.62, "Microsoft Cloud": 46.7},
+    "2025-09-30": {"AWS": 33.0, "Google Cloud": 15.16, "Microsoft Cloud": 49.1},
+    "2025-12-31": {"AWS": 35.6, "Google Cloud": 17.7, "Microsoft Cloud": 51.5},
+    "2026-03-31": {"AWS": 37.6, "Google Cloud": 20.03, "Microsoft Cloud": 54.5},
+    "2026-06-30": {"AWS": 42.2, "Google Cloud": 24.77, "Microsoft Cloud": 59.3},
+}
+CLOUD_OF = {"AWS": "Amazon", "Google Cloud": "Alphabet", "Microsoft Cloud": "Microsoft"}
+# Cash purchases of property & equipment (excludes finance leases), from quarterly cash-flow statements
+# (Financial Modeling Prep, pulled Oct 8, 2026)
+CAPEX_SOURCE = ("Company cash-flow statements via Financial Modeling Prep (Oct 8, 2026)",
+                "https://site.financialmodelingprep.com/")
+CAPEX_QUARTERLY = {
+    "2025-06-30": {"Amazon": 32.18, "Alphabet": 22.45, "Microsoft": 17.08, "Meta": 16.54},
+    "2025-09-30": {"Amazon": 35.10, "Alphabet": 23.95, "Microsoft": 19.39, "Meta": 18.83},
+    "2025-12-31": {"Amazon": 39.52, "Alphabet": 27.85, "Microsoft": 29.88, "Meta": 21.38},
+    "2026-03-31": {"Amazon": 44.20, "Alphabet": 35.67, "Microsoft": 30.88, "Meta": 19.00},
+    "2026-06-30": {"Amazon": 54.21, "Alphabet": 44.92, "Microsoft": 35.80, "Meta": 30.12},
+}
+# Explicit AI revenue disclosures (annualized run-rates), $B
+AI_DISCLOSURES = [
+    # date, company, label, run-rate $B, note, source
+    ("2025-01-29", "Microsoft", "AI business run-rate", 13, "Disclosed on the Jan 2025 call",
+     ("Microsoft FY25 Q2 earnings call", "https://www.microsoft.com/en-us/investor/earnings/fy-2025-q2/press-release-webcast")),
+    ("2026-04-29", "Microsoft", "AI business run-rate", 37, "Up 123% YoY (Apr 2026 call)",
+     ("Yahoo Finance: hyperscalers' Q1 2026", "https://finance.yahoo.com/sectors/technology/articles/hyperscalers-hit-700-billion-2026-111243744.html")),
+    ("2026-07-29", "Microsoft", "AI business run-rate (estimate)", 44.5, "Not disclosed; The Next Platform estimate",
+     ("The Next Platform (Jul 31, 2026)", "https://www.nextplatform.com/cloud/2026/07/31/ai-dominates-the-microsoft-conversation-but-not-the-companys-business/5281992")),
+    ("2026-04-30", "Amazon", "Custom AI chips (Trainium) run-rate", 20, "Growing triple digits; one slice of AWS AI revenue",
+     ("Yahoo Finance: hyperscalers' Q1 2026", "https://finance.yahoo.com/sectors/technology/articles/hyperscalers-hit-700-billion-2026-111243744.html")),
+]
+CLOUD_BACKLOG = [("Google Cloud", "Q1 2026", 460), ("Google Cloud", "Q2 2026", 514)]

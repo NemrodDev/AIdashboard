@@ -25,6 +25,7 @@ Needs: pip install streamlit altair pandas requests yfinance
 import io
 import itertools
 import os
+import re
 import time
 from datetime import date
 
@@ -671,57 +672,52 @@ def return_heatmap(d: pd.DataFrame, names: dict, sessions=20):
     return axis_cfg((rect + text).properties(height=30 * len(rows) + 50))
 
 
-def html_table(styler, bold_rows=()):
-    """Static table with right-aligned column headings and numbers (st.dataframe can't align
-    headers). Row labels stay left-aligned; colours follow the light/dark theme."""
-    styler = styler.set_table_styles([
-        {"selector": "", "props": "border-collapse: collapse; width: 100%; font-size: 0.9rem;"
-                                  "font-variant-numeric: tabular-nums;"},
-        {"selector": "th, td", "props": f"padding: 6px 12px; border-bottom: 1px solid {GRID};"},
-        {"selector": "th.col_heading", "props": f"text-align: right; color: {LABEL_INK}; font-weight: 600;"},
-        {"selector": "th.blank", "props": "text-align: left;"},
-        {"selector": "th.row_heading", "props": "text-align: left; font-weight: 500;"},
-        {"selector": "td", "props": "text-align: right;"},
-    ])
-    if bold_rows:
-        styler = styler.apply(lambda r: ["font-weight: 700" if r.name in bold_rows else "" for _ in r], axis=1)
-    st.html(f'<div style="overflow-x: auto;">{styler.to_html()}</div>')
+_NUMLIKE = re.compile(r"^\s*[~≈<>]?[$+\-−]?\$?[\d.,]+")
 
 
-_DOWNLOADS = itertools.count()
-
-
-def _chart_frames(ch) -> list:
-    """Every DataFrame inside an Altair chart, including the layers of a layered chart."""
+def _numeric_columns(df: pd.DataFrame) -> list:
+    """Columns that hold numbers: numeric dtypes, plus text columns whose values all look like numbers
+    (e.g. "~90", "65–70", "$1.2B"); dashes and blanks don't count against a column."""
     out = []
-    d = getattr(ch, "data", None)
-    if isinstance(d, pd.DataFrame):
-        out.append(d)
-    layers = getattr(ch, "layer", None)
-    if isinstance(layers, list):
-        for sub in layers:
-            out += _chart_frames(sub)
+    for c in df.columns:
+        col = df[c]
+        if pd.api.types.is_bool_dtype(col):
+            continue
+        if pd.api.types.is_numeric_dtype(col):
+            out.append(c)
+            continue
+        vals = [str(v) for v in col.dropna() if str(v).strip() not in ("", "—", "-", "n/a")]
+        if vals and all(_NUMLIKE.match(v) for v in vals):
+            out.append(c)
     return out
 
 
-def chart_csv(ch, data: pd.DataFrame = None) -> pd.DataFrame:
-    """The data behind a chart, tidied for a spreadsheet: the largest frame in the chart, long series
-    pivoted to one column per series, helper columns dropped."""
-    if data is None:
-        frames = _chart_frames(ch)
-        if not frames:
-            return pd.DataFrame()
-        data = max(frames, key=len)
-    d = data.loc[:, [c for c in data.columns if not str(c).startswith("_")]].copy()
-    for key in ("Series", "Component"):
-        if {"date", key, "value"} <= set(d.columns):
-            d = d.pivot_table(index="date", columns=key, values="value", aggfunc="first").reset_index()
-            d.columns.name = None
-            break
-    if "date" in d.columns:
-        d["date"] = pd.to_datetime(d["date"]).dt.strftime("%Y-%m-%d")
-        d = d.sort_values("date")
-    return d
+def html_table(data, bold_rows=(), hide_index=False, max_height=None):
+    """Static table: numeric columns have right-aligned headings and values, text columns are
+    left-aligned (st.dataframe can't align headings). Accepts a DataFrame or a pandas Styler.
+    Colours follow the light/dark theme."""
+    styler = data if hasattr(data, "to_html") and hasattr(data, "data") else data.style
+    df = styler.data
+    num = set(_numeric_columns(df))
+    styles = [
+        {"selector": "", "props": "border-collapse: collapse; width: 100%; font-size: 0.9rem;"
+                                  "font-variant-numeric: tabular-nums;"},
+        {"selector": "th, td", "props": f"padding: 6px 12px; border-bottom: 1px solid {GRID}; vertical-align: top;"},
+        {"selector": "th.col_heading", "props": f"color: {LABEL_INK}; font-weight: 600; text-align: left;"},
+        {"selector": "th.blank", "props": "text-align: left;"},
+        {"selector": "th.row_heading", "props": "text-align: left; font-weight: 500;"},
+        {"selector": "td", "props": "text-align: left;"},
+    ]
+    for i, c in enumerate(df.columns):
+        if c in num:
+            styles.append({"selector": f"th.col{i}, td.col{i}", "props": "text-align: right; white-space: nowrap;"})
+    styler = styler.set_table_styles(styles)
+    if hide_index:
+        styler = styler.hide(axis="index")
+    if bold_rows:
+        styler = styler.apply(lambda r: ["font-weight: 700" if r.name in bold_rows else "" for _ in r], axis=1)
+    box = "overflow-x: auto;" + (f" max-height: {max_height}px; overflow-y: auto;" if max_height else "")
+    st.html(f'<div style="{box}">{styler.to_html()}</div>')
 
 
 def show(chart=None, name="chart_data", data=None):
@@ -1062,9 +1058,9 @@ def firm_page():
         def neg_red(v):
             return f"color: {BAD}; font-weight: 600" if isinstance(v, (int, float)) and v < 0 else ""
         money = ["Capex", "Op. cash flow", "Free cash flow", "Net debt issued", "Capex TTM", "OCF TTM", "FCF TTM"]
-        st.dataframe(t.reset_index(drop=True).style.format({**{m: "${:,.1f}B" for m in money},
-                                                            "Capex / OCF %": "{:.0f}%"}, na_rep="—")
-                     .map(neg_red, subset=["Free cash flow", "FCF TTM"]), hide_index=True)
+        html_table(t.reset_index(drop=True).style.format({**{m: "${:,.1f}B" for m in money},
+                                                          "Capex / OCF %": "{:.0f}%"}, na_rep="—")
+                   .map(neg_red, subset=["Free cash flow", "FCF TTM"]), hide_index=True)
 
     l, r = st.columns(2)
     with l:
@@ -1109,8 +1105,7 @@ def firm_page():
                        + ". Microsoft has no public 2027 estimate in this file.")
     with r:
         said = pd.DataFrame([(co, txt) for co, *_, txt, _ in ref.CAPEX_2027], columns=["Company", "What management said"])
-        st.dataframe(said, hide_index=True, column_config={
-            "What management said": st.column_config.TextColumn(width="large")})
+        html_table(said, hide_index=True)
 
     sources_box(refs=[ref.PLATFORMONOMICS, ref.VANGUARD_BONDS] + [f[3] for f in ref.FIRM_FACTS]
                 + list(dict.fromkeys([c[5] for c in ref.CAPEX_2027] + [t[3] for t in ref.CAPEX_2027_TOTALS])),
@@ -1121,9 +1116,9 @@ def firm_page():
 # Page 3: Financial markets
 # ---------------------------------------------------------------------------
 def markets_page():
-    st.title("Financial markets: stocks, credit and token prices")
+    st.title("Financial markets: stocks and credit")
     st.caption("Daily closes from FMP (with a key) or Yahoo Finance; ICE BofA option-adjusted spreads via FRED; "
-               f"ratings, hyperscaler spreads and token prices are reference figures as of {ref.AS_OF}.")
+               f"ratings, CDS and hyperscaler spreads are reference figures as of {ref.AS_OF}.")
     with st.sidebar:
         segs = st.multiselect("Segments in the stock table", list(AI_SEGMENTS), default=DEFAULT_SEGMENTS,
                               key="mk_segments")
@@ -1206,8 +1201,8 @@ def markets_page():
         sc = pd.DataFrame(score)
         if not sc.empty:
             sc = sc.sort_values("YTD %", ascending=False, na_position="last")
-            st.dataframe(sc.style.format({p: "{:+.2f}%" for p in pcts if p in sc}, na_rep="—")
-                         .map(pos_neg, subset=[p for p in pcts if p in sc]), hide_index=True)
+            html_table(sc.style.format({p: "{:+.2f}%" for p in pcts if p in sc}, na_rep="—")
+                       .map(pos_neg, subset=[p for p in pcts if p in sc]), hide_index=True)
 
         # --- Individual stocks ---------------------------------------------------
         st.subheader("Individual stocks")
@@ -1261,8 +1256,8 @@ def markets_page():
                 if r["Symbol"] in etfs:
                     return ["color: #898781; font-style: italic" if c not in pcts else "" for c in r.index]
                 return ["" for _ in r]
-            st.dataframe(tab.style.format({"Close": "{:,.2f}", **{p: "{:+.2f}%" for p in pcts}}, na_rep="—")
-                         .map(pos_neg, subset=pcts).apply(row_style, axis=1), hide_index=True)
+            html_table(tab.style.format({"Close": "{:,.2f}", **{p: "{:+.2f}%" for p in pcts}}, na_rep="—")
+                       .map(pos_neg, subset=pcts).apply(row_style, axis=1), hide_index=True)
             st.caption("Grey italic rows = benchmark funds. Average row = simple average across the AI stocks in the "
                        "table only; funds are left out.")
         if pfail:
@@ -1336,15 +1331,150 @@ def markets_page():
         if not isinstance(v, (int, float)) or pd.isna(v):
             return ""
         return f"color: {BAD}; font-weight: 700" if v <= 0 else ""
-    st.dataframe(view.style.format({"Early 2026, bp": "{:.0f}", "Change, bp": "{:+.0f}", "Notches above junk": "{:.0f}"},
-                                   na_rep="—")
-                 .map(junk_red, subset=["Notches above junk"]).map(widen_red, subset=["Change, bp"]), hide_index=True)
+    html_table(view.style.format({"Early 2026, bp": "{:.0f}", "Change, bp": "{:+.0f}", "Notches above junk": "{:.0f}"},
+                                 na_rep="—")
+               .map(junk_red, subset=["Notches above junk"]).map(widen_red, subset=["Change, bp"]), hide_index=True)
     st.caption("Notches above junk use S&P's rating (Moody's where S&P is missing): 0 = BBB−, the last step before "
                "junk; negative = junk. CDS = yearly cost to insure $10M of debt, in bp; red = wider since the baseline. "
                "Dealer CDS quotes aren't free, so these are the latest levels reported in the press (late July 2026); "
                "Alphabet, Amazon and Microsoft baselines are mid-Nov 2025 readings. Edit RATINGS and CDS_5Y in "
                "ai_boom_reference.py to update.")
 
+    sources_box(tuple(CREDIT), refs=[ref.REUTERS_SPREADS, ref.ORACLE_CDS["source"], ref.CDS_BASELINE_SOURCE]
+                + list(dict.fromkeys(v[5] for v in ref.CDS_5Y.values()))
+                + list(dict.fromkeys(r[7] for r in ref.RATINGS)),
+                notes=[f"**{seg}:** " + ", ".join(f"{t} ({n})" for t, n in m.items()) for seg, m in AI_SEGMENTS.items()]
+                + ["**Funds:** " + "; ".join(f"{t} = {n}" for t, n in AI_ETFS.items()),
+                   "Bloomberg's own AI indexes (e.g. BAIVT, the AI Value Chain Equal Weight Index) need a terminal; "
+                   "AIVC is the ETF that tracks BAIVT."]
+                + (["Prices: " + ", ".join(sorted({f'{v}' for v in psrc.values()}))] if not px.empty else []))
+
+
+# ---------------------------------------------------------------------------
+# Page 4: Leading signals
+# ---------------------------------------------------------------------------
+def leading_page():
+    st.title("Leading signals: where the boom is heading")
+    st.caption("Chip supply-chain orders lead capex by a quarter or two; AI revenue, token volume and token prices "
+               f"test whether the spending pays off. Reference figures as of {ref.AS_OF}.")
+    nv, ts = ref.NVIDIA, ref.TSMC_MONTHLY[-1]
+    c = st.columns(5)
+    tile(c[0], "Nvidia next-quarter revenue guide", f"${nv['q3_guide_b']:.0f}B",
+         f"Q2 ${nv['q2_fy27_rev_b']}B, {nv['q2_yoy_pct']:+d}% YoY")
+    tile(c[1], f"TSMC revenue, {pd.Timestamp(ts[0] + '-01'):%b %Y}", f"NT${ts[1]:.0f}B", f"{ts[2]:+.1f}% YoY")
+    tile(c[2], f"Korean chip exports, {ref.KOREA_CHIP_RECORDS[-1][0]} 2026", f"${ref.KOREA_CHIP_RECORDS[-1][1]}B",
+         f"{ref.KOREA_CHIP_LATEST_YOY:+.1f}% YoY")
+    tile(c[3], "DRAM contract prices, Q4 2026", ref.DRAM["q4_2026_dram_incl_hbm"], "incl. HBM (TrendForce)")
+    tile(c[4], "US firms using AI", f"{ref.BTOS_AI_USE[-1][1]}%", f"from {ref.BTOS_AI_USE[1][1]}% at start of 2026")
+
+    # --- AI revenue vs capex ----------------------------------------------------
+    st.subheader("Is AI revenue keeping up with the capex?")
+    st.caption("Hyperscalers don't report AI revenue as a separate line, so the closest reported measure is their "
+               "cloud businesses (AWS, Google Cloud, Microsoft Cloud), where AI demand is booked. Capex = cash "
+               "purchases of property & equipment (excludes finance leases). Meta has no cloud business: its AI "
+               "returns come through advertising.")
+    q_dates = sorted(ref.CLOUD_REVENUE)
+    rows = []
+    for d in q_dates:
+        for seg, rev in ref.CLOUD_REVENUE[d].items():
+            co = ref.CLOUD_OF[seg]
+            cap = ref.CAPEX_QUARTERLY[d][co]
+            rows.append({"date": pd.Timestamp(d), "Quarter": qlabel(pd.Timestamp(d)), "Company": co, "Cloud unit": seg,
+                         "Cloud revenue": rev, "Capex": cap, "Capex / cloud revenue %": cap / rev * 100})
+    rc = pd.DataFrame(rows)
+    latest_q = rc["date"].max()
+    c = st.columns(4)
+    for col, (seg, g) in zip(c, rc.groupby("Cloud unit", sort=False)):
+        g = g.sort_values("date")
+        tile(col, f"{g['Company'].iloc[-1]} capex ÷ {seg} revenue, {g['Quarter'].iloc[-1]}",
+             f"{g['Capex / cloud revenue %'].iloc[-1]:.0f}%",
+             f"{g['Capex / cloud revenue %'].iloc[-1] - g['Capex / cloud revenue %'].iloc[0]:+.0f}pp vs {g['Quarter'].iloc[0]}",
+             delta_color="inverse", help="Above 100% = spending more on capex each quarter than the cloud unit brings in.")
+    tot = rc[rc["date"] == latest_q]
+    meta_cap = ref.CAPEX_QUARTERLY[q_dates[-1]]["Meta"]
+    tile(c[3], f"All three, {qlabel(latest_q)}", f"{tot['Capex'].sum() / tot['Cloud revenue'].sum() * 100:.0f}%",
+         f"{(tot['Capex'].sum() + meta_cap) / tot['Cloud revenue'].sum() * 100:.0f}% incl. Meta's capex", delta_color="off")
+
+    cols = st.columns(3)
+    for col, (seg, g) in zip(cols, rc.groupby("Cloud unit", sort=False)):
+        with col:
+            long = pd.concat([g.assign(Series="Capex", value=g["Capex"]),
+                              g.assign(Series=f"{seg} revenue", value=g["Cloud revenue"])])
+            names_ = ["Capex", f"{seg} revenue"]
+            ch = alt.Chart(long).mark_bar(cornerRadiusEnd=3).encode(
+                x=alt.X("Quarter:N", title=None, sort=[qlabel(pd.Timestamp(d)) for d in q_dates],
+                        axis=alt.Axis(labelAngle=0, labelFontSize=10)),
+                xOffset=alt.XOffset("Series:N", sort=names_), y=alt.Y("value:Q", title="$B per quarter"),
+                color=alt.Color("Series:N", scale=alt.Scale(domain=names_, range=[ORANGE, BLUE]),
+                                legend=alt.Legend(title=None, orient="top")),
+                tooltip=["Quarter:N", "Series:N", alt.Tooltip("value:Q", format="$,.1f", title="$B")])
+            show(name=f"capex_vs_{seg.lower().replace(' ', '_')}_revenue", data=g.drop(columns=["date"]),
+                 chart=axis_cfg(ch.properties(title=f"{g['Company'].iloc[0]}: capex vs {seg}", height=240)))
+
+    # Annualized snapshot: the revenue AI demand produces vs what is being spent
+    latest_rr = {}
+    for d, co, v, _note in sorted(ref.AI_REVENUE):  # latest run-rate per lab
+        latest_rr[co] = v
+    lab_rr = sum(latest_rr.values())
+    capex_guide_mid = sum(jul for _co, _jan, _apr, jul, _n in ref.CAPEX_GUIDANCE)
+    ms = [x for x in ref.AI_DISCLOSURES if x[1] == "Microsoft" and "estimate" not in x[2]][-1]
+    ms_q = max(d for d in q_dates if d <= ms[0]) if any(d <= ms[0] for d in q_dates) else q_dates[0]
+    snap = pd.DataFrame([
+        (f"Big-3 cloud revenue vs big-4 capex ({qlabel(latest_q)} × 4)", "Revenue", tot["Cloud revenue"].sum() * 4),
+        (f"Big-3 cloud revenue vs big-4 capex ({qlabel(latest_q)} × 4)", "Capex",
+         (tot["Capex"].sum() + meta_cap) * 4),
+        (f"Microsoft AI run-rate vs its capex ({qlabel(pd.Timestamp(ms_q))} × 4)", "Revenue", ms[3]),
+        (f"Microsoft AI run-rate vs its capex ({qlabel(pd.Timestamp(ms_q))} × 4)", "Capex",
+         ref.CAPEX_QUARTERLY[ms_q]["Microsoft"] * 4),
+        ("Anthropic + OpenAI run-rate vs big-4 2026 capex guidance", "Revenue", lab_rr),
+        ("Anthropic + OpenAI run-rate vs big-4 2026 capex guidance", "Capex", capex_guide_mid),
+    ], columns=["Comparison", "Measure", "Annualized $B"])
+    st.markdown("**Annualized: AI-driven revenue vs capex**")
+    show(name="ai_revenue_vs_capex_annualized", chart=grouped_bars(
+        snap, "Comparison", "Measure", "Annualized $B", ["Revenue", "Capex"], [BLUE, ORANGE], fmt="$,.0f",
+        x_title="$B per year", height=230))
+    st.caption("Cloud revenue includes non-AI services, so it overstates AI revenue; Microsoft's AI run-rate is the only "
+               "explicit hyperscaler AI figure. AI-lab revenue is end demand that hyperscalers partly capture as cloud "
+               "spending. Capex is front-loaded: assets bought now earn revenue over several years, so the ratio "
+               "should fall if demand keeps up. Contracted backlog points that way: Google Cloud's rose to "
+               f"${ref.CLOUD_BACKLOG[-1][2]}B in {ref.CLOUD_BACKLOG[-1][1]}.")
+    disc = pd.DataFrame([(pd.Timestamp(d).strftime("%b %Y"), co, lab, v, note) for d, co, lab, v, note, _ in ref.AI_DISCLOSURES],
+                        columns=["Date", "Company", "Disclosure", "Run-rate, $B", "Note"])
+    html_table(disc, hide_index=True)
+
+    l, r = st.columns(2)
+    with l:
+        st.subheader("AI-lab revenue run-rates")
+        ar = pd.DataFrame(ref.AI_REVENUE, columns=["date", "Series", "value", "note"])
+        ar["date"] = pd.to_datetime(ar["date"])
+        show(name="ai_lab_revenue", chart=line_chart(ar, fmt="$,.0f", y_title="$B annualized", height=300, colors=[BLUE, ORANGE],
+                        date_fmt="%b %Y"))
+        st.caption("Reported run-rates are extrapolations, not audited revenue; the two labs may measure differently.")
+    with r:
+        st.subheader("Token volume on OpenRouter")
+        orr = pd.DataFrame([(d, v) for d, v, *_ in ref.OPENROUTER], columns=["date", "value"])
+        orr["date"], orr["Series"] = pd.to_datetime(orr["date"]), "Tokens per week"
+        show(name="openrouter_tokens", chart=line_chart(orr, fmt=",.4~g", y_title="Trillion tokens per week (log)", height=300, log=True,
+                        legend=False, date_fmt="%b %Y"))
+        st.caption("One aggregator, not the whole market.")
+    l, r = st.columns(2)
+    with l:
+        st.subheader("Korean chip exports keep setting records")
+        k = pd.DataFrame(ref.KOREA_CHIP_RECORDS, columns=["Month", "value"])
+        show(name="korea_chip_exports", chart=cat_bars(k, "Month", "value", fmt="$,.1f", y_title="$B per month", highlight_last=True))
+        st.caption("2026 monthly records only (Jan, Apr and Jul were not records).")
+    with r:
+        st.subheader("TSMC monthly revenue")
+        tm = pd.DataFrame(ref.TSMC_MONTHLY, columns=["Month", "value", "yoy"])
+        tm["Month"] = pd.to_datetime(tm["Month"] + "-01").dt.strftime("%b %Y")
+        show(name="tsmc_monthly_revenue", chart=cat_bars(tm, "Month", "value", fmt=",.0f", y_title="NT$ billions", highlight_last=True))
+        st.caption("YoY: " + ", ".join(f"{m} {y:+.1f}%" for m, _, y in tm.itertuples(index=False)) + ".")
+    st.subheader("Share of US firms using AI")
+    bt = pd.DataFrame(ref.BTOS_AI_USE, columns=["date", "value"])
+    bt["date"], bt["Series"] = pd.to_datetime(bt["date"]), "Firms using AI"
+    show(name="btos_ai_use", chart=line_chart(bt, fmt=".1f", y_title="% of firms, past two weeks", height=240, legend=False, zero=True,
+                    date_fmt="%b %d, %Y"))
+    st.caption("Census BTOS: used AI in any business function. The question was broadened in Nov 2025.")
     st.subheader("Token prices")
     ti = ref.TOKEN_INDEX
     c = st.columns(4)
@@ -1385,69 +1515,10 @@ def markets_page():
     show(name="token_price_gpt4_level", chart=axis_cfg((ch + lab).properties(height=280, padding={"right": 90})))
     st.caption("Cheapest model matching GPT-4 on MMLU. Flagship prices have risen over the past year even as the "
                "price of a fixed capability collapsed.")
-    sources_box(tuple(CREDIT), refs=[ref.REUTERS_SPREADS, ref.ORACLE_CDS["source"], ref.CDS_BASELINE_SOURCE]
-                + list(dict.fromkeys(v[5] for v in ref.CDS_5Y.values()))
-                + list(dict.fromkeys(x[3] for x in ref.SDLLMTK)) + [ref.EPOCH, ref.BENCHLM]
-                + list(dict.fromkeys(r[7] for r in ref.RATINGS)),
-                notes=[f"**{seg}:** " + ", ".join(f"{t} ({n})" for t, n in m.items()) for seg, m in AI_SEGMENTS.items()]
-                + ["**Funds:** " + "; ".join(f"{t} = {n}" for t, n in AI_ETFS.items()),
-                   "Bloomberg's own AI indexes (e.g. BAIVT, the AI Value Chain Equal Weight Index) need a terminal; "
-                   "AIVC is the ETF that tracks BAIVT."]
-                + (["Prices: " + ", ".join(sorted({f'{v}' for v in psrc.values()}))] if not px.empty else []))
-
-
-# ---------------------------------------------------------------------------
-# Page 4: Leading signals
-# ---------------------------------------------------------------------------
-def leading_page():
-    st.title("Leading signals: where the boom is heading")
-    st.caption("Chip supply-chain orders lead capex by a quarter or two; AI revenue and token volume test whether "
-               f"the spending pays off. Reference figures as of {ref.AS_OF}.")
-    nv, ts = ref.NVIDIA, ref.TSMC_MONTHLY[-1]
-    c = st.columns(5)
-    tile(c[0], "Nvidia next-quarter revenue guide", f"${nv['q3_guide_b']:.0f}B",
-         f"Q2 ${nv['q2_fy27_rev_b']}B, {nv['q2_yoy_pct']:+d}% YoY")
-    tile(c[1], f"TSMC revenue, {pd.Timestamp(ts[0] + '-01'):%b %Y}", f"NT${ts[1]:.0f}B", f"{ts[2]:+.1f}% YoY")
-    tile(c[2], f"Korean chip exports, {ref.KOREA_CHIP_RECORDS[-1][0]} 2026", f"${ref.KOREA_CHIP_RECORDS[-1][1]}B",
-         f"{ref.KOREA_CHIP_LATEST_YOY:+.1f}% YoY")
-    tile(c[3], "DRAM contract prices, Q4 2026", ref.DRAM["q4_2026_dram_incl_hbm"], "incl. HBM (TrendForce)")
-    tile(c[4], "US firms using AI", f"{ref.BTOS_AI_USE[-1][1]}%", f"from {ref.BTOS_AI_USE[1][1]}% at start of 2026")
-
-    l, r = st.columns(2)
-    with l:
-        st.subheader("AI-lab revenue run-rates")
-        ar = pd.DataFrame(ref.AI_REVENUE, columns=["date", "Series", "value", "note"])
-        ar["date"] = pd.to_datetime(ar["date"])
-        show(name="ai_lab_revenue", chart=line_chart(ar, fmt="$,.0f", y_title="$B annualized", height=300, colors=[BLUE, ORANGE],
-                        date_fmt="%b %Y"))
-        st.caption("Reported run-rates are extrapolations, not audited revenue; the two labs may measure differently.")
-    with r:
-        st.subheader("Token volume on OpenRouter")
-        orr = pd.DataFrame([(d, v) for d, v, *_ in ref.OPENROUTER], columns=["date", "value"])
-        orr["date"], orr["Series"] = pd.to_datetime(orr["date"]), "Tokens per week"
-        show(name="openrouter_tokens", chart=line_chart(orr, fmt=",.4~g", y_title="Trillion tokens per week (log)", height=300, log=True,
-                        legend=False, date_fmt="%b %Y"))
-        st.caption("One aggregator, not the whole market.")
-    l, r = st.columns(2)
-    with l:
-        st.subheader("Korean chip exports keep setting records")
-        k = pd.DataFrame(ref.KOREA_CHIP_RECORDS, columns=["Month", "value"])
-        show(name="korea_chip_exports", chart=cat_bars(k, "Month", "value", fmt="$,.1f", y_title="$B per month", highlight_last=True))
-        st.caption("2026 monthly records only (Jan, Apr and Jul were not records).")
-    with r:
-        st.subheader("TSMC monthly revenue")
-        tm = pd.DataFrame(ref.TSMC_MONTHLY, columns=["Month", "value", "yoy"])
-        tm["Month"] = pd.to_datetime(tm["Month"] + "-01").dt.strftime("%b %Y")
-        show(name="tsmc_monthly_revenue", chart=cat_bars(tm, "Month", "value", fmt=",.0f", y_title="NT$ billions", highlight_last=True))
-        st.caption("YoY: " + ", ".join(f"{m} {y:+.1f}%" for m, _, y in tm.itertuples(index=False)) + ".")
-    st.subheader("Share of US firms using AI")
-    bt = pd.DataFrame(ref.BTOS_AI_USE, columns=["date", "value"])
-    bt["date"], bt["Series"] = pd.to_datetime(bt["date"]), "Firms using AI"
-    show(name="btos_ai_use", chart=line_chart(bt, fmt=".1f", y_title="% of firms, past two weeks", height=240, legend=False, zero=True,
-                    date_fmt="%b %d, %Y"))
-    st.caption("Census BTOS: used AI in any business function. The question was broadened in Nov 2025.")
     sources_box(refs=[nv["source"], ref.TSMC_SOURCE, ref.KOREA_SOURCE, ref.DRAM["source"], ref.AI_REVENUE_SOURCE,
-                      ref.BTOS_SOURCE] + list(dict.fromkeys(o[3] for o in ref.OPENROUTER)))
+                      ref.BTOS_SOURCE] + list(dict.fromkeys(o[3] for o in ref.OPENROUTER))
+                + ref.CLOUD_SOURCES + [ref.CAPEX_SOURCE] + list(dict.fromkeys(x[5] for x in ref.AI_DISCLOSURES))
+                + list(dict.fromkeys(x[3] for x in ref.SDLLMTK)) + [ref.EPOCH, ref.BENCHLM])
 
 
 # ---------------------------------------------------------------------------
