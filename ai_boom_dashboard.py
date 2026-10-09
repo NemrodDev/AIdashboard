@@ -23,6 +23,7 @@ Needs: pip install streamlit altair pandas requests yfinance
 """
 
 import io
+import itertools
 import os
 import time
 from datetime import date
@@ -100,13 +101,39 @@ SERIES_NAMES = {**NIPA_NOMINAL, **{k: v + " (real growth)" for k, v in NIPA_REAL
                 **{k: v + " (contribution)" for k, v in NIPA_CONTRIB.items()}, **NIPA_REAL_LEVELS,
                 **TRADE_NOMINAL, **GDP_GROWTH, **MONTHLY_REAL, **PRODUCTIVITY, **CREDIT, **LABOR}
 
-AI_TICKERS = {
-    "NVDA": "Nvidia", "AVGO": "Broadcom", "TSM": "TSMC", "AMD": "AMD", "MU": "Micron",
-    "MSFT": "Microsoft", "GOOGL": "Alphabet", "AMZN": "Amazon", "META": "Meta", "ORCL": "Oracle",
-    "CRWV": "CoreWeave", "VRT": "Vertiv", "QQQ": "Nasdaq-100 ETF",
+# The AI trade by segment (edit freely: each segment becomes an equal-weight basket)
+AI_SEGMENTS = {
+    "Chips": {"NVDA": "Nvidia", "AVGO": "Broadcom", "AMD": "AMD", "TSM": "TSMC", "MU": "Micron",
+              "MRVL": "Marvell", "ARM": "Arm"},
+    "Chip equipment": {"ASML": "ASML", "AMAT": "Applied Materials", "LRCX": "Lam Research", "KLAC": "KLA"},
+    "Hyperscalers": {"MSFT": "Microsoft", "GOOGL": "Alphabet", "AMZN": "Amazon", "META": "Meta", "ORCL": "Oracle"},
+    "Neoclouds": {"CRWV": "CoreWeave", "NBIS": "Nebius"},
+    "Networking & servers": {"ANET": "Arista Networks", "DELL": "Dell", "SMCI": "Supermicro"},
+    "Power & cooling": {"VRT": "Vertiv", "ETN": "Eaton", "GEV": "GE Vernova", "CEG": "Constellation Energy",
+                        "VST": "Vistra"},
+    "Software": {"PLTR": "Palantir", "NOW": "ServiceNow", "CRM": "Salesforce", "SNOW": "Snowflake",
+                 "DDOG": "Datadog", "ADBE": "Adobe"},
 }
-DEFAULT_TICKERS = ["NVDA", "AVGO", "TSM", "MSFT", "GOOGL", "AMZN", "META", "ORCL", "QQQ"]
+SEGMENT_OF = {t: seg for seg, m in AI_SEGMENTS.items() for t in m}
+AI_TICKERS = {t: n for m in AI_SEGMENTS.values() for t, n in m.items()}
+DEFAULT_SEGMENTS = ["Chips", "Hyperscalers", "Software"]
+# Index funds that track pieces of the AI trade (benchmarks; never averaged with the stocks)
+AI_ETFS = {
+    "QQQ": "Nasdaq-100 (Invesco QQQ)",
+    "AIVC": "Bloomberg AI Value Chain Equal Weight (Amplify AIVC)",
+    "SMH": "Semiconductors (VanEck SMH)",
+    "SOXX": "Semiconductors (iShares SOXX)",
+    "IGV": "Software (iShares IGV)",
+    "AIQ": "AI & Technology (Global X AIQ)",
+    "CHAT": "Generative AI & Tech (Roundhill CHAT)",
+    "GRID": "Smart grid infrastructure (First Trust GRID)",
+}
+DEFAULT_ETFS = ["QQQ", "AIVC", "SMH", "IGV"]
+BENCHMARKS = set(AI_ETFS) | {"SPY", "VOO", "IVV", "DIA", "IWM", "^IXIC", "^GSPC", "^NDX"}
+BASKET = "Equal-weight AI basket"
 HYPERSCALERS = {"MSFT": "Microsoft", "GOOGL": "Alphabet", "AMZN": "Amazon", "META": "Meta", "ORCL": "Oracle"}
+# Firms tracked on the Firm level page: hyperscalers plus the debt-funded neoclouds
+CAPEX_FIRMS = {**HYPERSCALERS, "CRWV": "CoreWeave", "NBIS": "Nebius"}
 
 # Chart colours: same validated palette as the jobs dashboard
 BLUE = "#2a78d6"
@@ -330,7 +357,7 @@ def load_cash_flows(tickers: tuple, fmp_key: str = "") -> tuple:
                 pass
     d = pd.DataFrame(rows, columns=["symbol", "quarter", "capex", "ocf", "fcf", "debt"])
     d = d.dropna(subset=["capex", "ocf"]).drop_duplicates(["symbol", "quarter"])
-    d["company"] = d["symbol"].map(HYPERSCALERS)
+    d["company"] = d["symbol"].map(CAPEX_FIRMS)
     return d.sort_values(["symbol", "quarter"]), src
 
 
@@ -589,11 +616,73 @@ def return_heatmap(d: pd.DataFrame, names: dict, sessions=20):
     return axis_cfg((rect + text).properties(height=30 * len(rows) + 50))
 
 
-def show(chart):
+def html_table(styler, bold_rows=()):
+    """Static table with right-aligned column headings and numbers (st.dataframe can't align
+    headers). Row labels stay left-aligned; colours follow the light/dark theme."""
+    styler = styler.set_table_styles([
+        {"selector": "", "props": "border-collapse: collapse; width: 100%; font-size: 0.9rem;"
+                                  "font-variant-numeric: tabular-nums;"},
+        {"selector": "th, td", "props": f"padding: 6px 12px; border-bottom: 1px solid {GRID};"},
+        {"selector": "th.col_heading", "props": f"text-align: right; color: {LABEL_INK}; font-weight: 600;"},
+        {"selector": "th.blank", "props": "text-align: left;"},
+        {"selector": "th.row_heading", "props": "text-align: left; font-weight: 500;"},
+        {"selector": "td", "props": "text-align: right;"},
+    ])
+    if bold_rows:
+        styler = styler.apply(lambda r: ["font-weight: 700" if r.name in bold_rows else "" for _ in r], axis=1)
+    st.html(f'<div style="overflow-x: auto;">{styler.to_html()}</div>')
+
+
+_DOWNLOADS = itertools.count()
+
+
+def _chart_frames(ch) -> list:
+    """Every DataFrame inside an Altair chart, including the layers of a layered chart."""
+    out = []
+    d = getattr(ch, "data", None)
+    if isinstance(d, pd.DataFrame):
+        out.append(d)
+    layers = getattr(ch, "layer", None)
+    if isinstance(layers, list):
+        for sub in layers:
+            out += _chart_frames(sub)
+    return out
+
+
+def chart_csv(ch, data: pd.DataFrame = None) -> pd.DataFrame:
+    """The data behind a chart, tidied for a spreadsheet: the largest frame in the chart, long series
+    pivoted to one column per series, helper columns dropped."""
+    if data is None:
+        frames = _chart_frames(ch)
+        if not frames:
+            return pd.DataFrame()
+        data = max(frames, key=len)
+    d = data.loc[:, [c for c in data.columns if not str(c).startswith("_")]].copy()
+    for key in ("Series", "Component"):
+        if {"date", key, "value"} <= set(d.columns):
+            d = d.pivot_table(index="date", columns=key, values="value", aggfunc="first").reset_index()
+            d.columns.name = None
+            break
+    if "date" in d.columns:
+        d["date"] = pd.to_datetime(d["date"]).dt.strftime("%Y-%m-%d")
+        d = d.sort_values("date")
+    return d
+
+
+def show(chart=None, name="chart_data", data=None):
+    """Draw a chart with a 'Download CSV' button for its data underneath."""
     if chart is None:
         st.caption("No data for this chart yet.")
-    else:
-        st.altair_chart(chart)
+        return
+    st.altair_chart(chart)
+    try:
+        csv = chart_csv(chart, data)
+    except Exception:
+        csv = pd.DataFrame()
+    if not csv.empty:
+        st.download_button("⬇ Download CSV", csv.to_csv(index=False).encode(),
+                           file_name=f"{name}_{date.today():%Y-%m-%d}.csv", mime="text/csv",
+                           key=f"dl_{name}_{next(_DOWNLOADS)}")
 
 
 def tile(col, label, value, delta=None, help=None, delta_color="off"):
@@ -692,10 +781,11 @@ def real_economy_page():
          f"{last_val(yoy(ip, 12)):+.1f}% YoY", help="Industrial production, NAICS 3344, 2017=100.")
 
     # --- Investment lines ----------------------------------------------------
-    st.subheader("Investment series used as the AI proxy")
-    st.caption("Software and R&D are intellectual property products; computers & peripherals sit inside "
-               "information-processing equipment, which sits inside the broad A679RC aggregate. "
-               "Communication equipment is left out: it mixes networking gear with phones and broadcast gear.")
+    st.subheader("How much are businesses spending on AI-related investment?")
+    st.caption("Business investment from the official GDP accounts (BEA) in the categories where AI spending "
+               "shows up. The broadest line, info-processing equipment + software, contains the others: "
+               "computers & servers are part of info-processing equipment. R&D is shown separately. "
+               "Communication equipment is left out because it mixes networking gear with phones and broadcast gear.")
     measure = st.segmented_control("Measure", ["Level ($B)", "Year-over-year %", "Real growth, annualized %"],
                                    default="Level ($B)", key="re_measure", label_visibility="collapsed") or "Level ($B)"
     picks = st.multiselect("Lines", list(NIPA_NOMINAL.values()), default=list(NIPA_NOMINAL.values()), key="re_lines",
@@ -709,35 +799,45 @@ def real_economy_page():
     else:
         m = {n: ser(raw, sid) for sid, n in NIPA_REAL_GROWTH.items() if n in picks}
         fmt, yt = "+.1f", "% change at annual rate (real)"
-    show(line_chart(window(to_long(m)), fmt=fmt, y_title=yt, height=340, zero=measure != "Level ($B)",
+    show(name="ai_investment_lines", chart=line_chart(window(to_long(m)), fmt=fmt, y_title=yt, height=340, zero=measure != "Level ($B)",
                     date_fmt="%Y Q%q"))
 
     # --- Contributions -------------------------------------------------------
-    st.subheader("Contribution to real GDP growth, by quarter")
-    st.caption("Bars = BEA contributions (pp at annual rate) for each line, with the import offset computed "
-               "as lagged share of GDP × real growth of net imports of computers, peripherals and parts. "
-               "Black line = net AI-proxy contribution. Orange diamonds = total real GDP growth.")
+    st.subheader("How much did AI investment add to GDP growth each quarter?")
+    st.caption("Each bar is the percentage points of quarterly GDP growth (annualized) that one category added, "
+               "as published by BEA. The red bar subtracts imported computer hardware, which counts as US "
+               "investment but is made abroad. Black line = AI total after imports. Orange diamonds = overall GDP "
+               "growth. The table's last row shows the AI total as a share of all growth.")
     cw = contrib[contrib.index >= pd.Timestamp(f"{start_year}-01-01")]
-    show(stacked_contrib(cw, gdp_g, "Real GDP growth"))
+    show(name="gdp_contribution_quarterly", chart=stacked_contrib(cw, gdp_g, "Real GDP growth"))
     if not contrib.empty:
         tbl = contrib.tail(6).copy()
         tbl["Net AI proxy"] = tbl.sum(axis=1)
         tbl["Real GDP growth"] = gdp_g.reindex(tbl.index)
         tbl["AI share of growth"] = tbl["Net AI proxy"] / tbl["Real GDP growth"] * 100
         tbl.index = [qlabel(i) for i in tbl.index]
-        st.dataframe(tbl.T.style.format("{:+.2f}", na_rep="—").format(
-            "{:.0f}%", subset=pd.IndexSlice[["AI share of growth"], :], na_rep="—"))
+        styler = tbl.T.style.format("{:+.2f}", na_rep="—").format(
+            "{:.0f}%", subset=pd.IndexSlice[["AI share of growth"], :], na_rep="—")
+        html_table(styler, bold_rows=["Net AI proxy"])
 
     # --- Fed-style year-over-year proxy ---------------------------------------
-    st.subheader("Buildout proxy, year over year (Federal Reserve method)")
-    st.caption("Software + computers & peripherals + data centers + power facilities − net imports of computers "
-               "and parts, as a contribution to real GDP growth over four quarters. Structures come from Census "
-               "C30 (data centers in constant dollars via OWID; power in nominal terms).")
+    st.subheader("How much of the past year's GDP growth came from the AI buildout?")
+    st.markdown(
+        "This follows the method in a July 2026 Federal Reserve staff note. It adds up four kinds of spending "
+        "that make up the AI buildout: **software**, **computers & servers**, **data center construction** and "
+        "**power plant construction**. It then **subtracts imported computer hardware**: a GPU built in Taiwan "
+        "counts as US investment but isn't US production, so it doesn't add to US GDP.\n\n"
+        "Each bar is how many percentage points that piece added to real GDP growth over the past four quarters. "
+        "The black line is the total after imports; the orange diamonds are overall GDP growth. When the line sits "
+        "close to the diamonds, nearly all of the economy's growth came from the AI buildout.")
+    st.caption("Compared with the quarterly chart above: this one covers a full year, so it's less jumpy; it adds "
+               "data centers and power plants; and it leaves out R&D. Structures come from the Census construction "
+               "survey (data centers in inflation-adjusted dollars via Our World in Data; power in current dollars).")
     proxy = yoy_buildout_proxy(raw, dc, trade_w)
     gdpc = ser(raw, "GDPC1")
     gdp_yoy = yoy(gdpc, 4)
     pw = proxy[proxy.index >= pd.Timestamp(f"{start_year}-01-01")]
-    show(stacked_contrib(pw, gdp_yoy, "Real GDP growth, YoY %"))
+    show(name="ai_buildout_share_of_gdp_growth_yoy", chart=stacked_contrib(pw, gdp_yoy, "Real GDP growth, YoY %"))
     fed = ref.FED_PROXY
     a, b, cc = st.columns(3)
     tile(a, "Fed estimate, Q1 2026 (gross)", f"{fed['q1_2026_gross_pp']:.2f}pp",
@@ -750,44 +850,49 @@ def real_economy_page():
              f"of {gdp_yoy.get(lq, float('nan')):.1f}% real GDP growth YoY")
 
     # --- Structures -----------------------------------------------------------
-    st.subheader("Structures outside the NIPA lines (Census C30)")
+    st.subheader("Building the data centers and power plants")
+    st.caption("Spending on the buildings themselves, from the Census Bureau's monthly construction survey. The "
+               "GDP categories above cover equipment and software, not buildings, so these are tracked separately.")
     l, r = st.columns(2)
     with l:
         dcw = window(dc).assign(Series="Monthly")
         roll = dc.set_index("date")["value"].rolling(12).mean()
         dcw = pd.concat([dcw, window(to_long({"12-month average": roll}))])
-        show(line_chart(dcw, fmt=",.2f", y_title="$B per month, 2021 dollars", height=280,
+        show(name="data_center_construction", chart=line_chart(dcw, fmt=",.2f", y_title="$B per month, 2021 dollars", height=280,
                         colors=[BLUE, MA_COLOR], dashed=["Monthly"], date_fmt="%b %Y"))
         st.caption(f"Data center construction, not seasonally adjusted. Source: "
                    f"{'Our World in Data (live)' if dc_src == 'live' else 'snapshot in ai_boom_reference.py'}. "
                    "Excludes the servers inside.")
     with r:
         power = ser(raw, "PRPWRCONS") / 1000
-        show(line_chart(window(to_long({"Power construction": power})), fmt=",.1f",
+        show(name="power_construction", chart=line_chart(window(to_long({"Power construction": power})), fmt=",.1f",
                         y_title="$B, annual rate", height=280, legend=False, date_fmt="%b %Y"))
         st.caption(f"Private power construction, latest {last_val(yoy(power, 12)):+.1f}% YoY. "
                    "Included in the Fed's buildout proxy.")
 
     # --- Trade and domestic production ---------------------------------------
-    st.subheader("Import offset and domestic production")
+    st.subheader("How much AI hardware is imported, and how much the US makes")
     l, r = st.columns(2)
     with l:
-        show(line_chart(window(to_long({"Imports": imp_n, "Exports": exp_n, "Net imports": imp_n - exp_n})),
+        show(name="computer_trade", chart=line_chart(window(to_long({"Imports": imp_n, "Exports": exp_n, "Net imports": imp_n - exp_n})),
                         fmt=",.0f", y_title="$B, annual rate", height=280, colors=[ORANGE, BLUE, BAD],
                         date_fmt="%Y Q%q"))
-        st.caption("Computers, peripherals and parts (NIPA end-use goods). Used only as an offset, so imported "
-                   "hardware is not counted as domestic GDP.")
+        st.caption("Trade in computers, servers and parts. Imports far exceed exports: most AI hardware is built "
+                   "abroad, so that spending boosts other countries' output rather than US GDP. Net imports are "
+                   "what the charts above subtract.")
     with r:
-        show(line_chart(window(to_long({"Semiconductors (NAICS 3344)": ip})), fmt=",.1f",
+        show(name="semiconductor_production", chart=line_chart(window(to_long({"Semiconductors (NAICS 3344)": ip})), fmt=",.1f",
                         y_title="Index, 2017 = 100", height=280, legend=False, date_fmt="%b %Y"))
-        st.caption("Industrial production of semiconductors and other electronic components (Fed G.17).")
+        st.caption("US factory output of semiconductors and other electronic components (Federal Reserve "
+                   "industrial production index, 2017 = 100).")
 
-    st.subheader("Use and productivity")
+    st.subheader("Is AI making workers more productive yet?")
     prod = ser(raw, "PRS85006092")
-    show(bar_time(window(pd.DataFrame({"date": prod.index, "value": prod.values})), fmt="+.1f",
+    show(name="labor_productivity", chart=bar_time(window(pd.DataFrame({"date": prod.index, "value": prod.values})), fmt="+.1f",
                   y_title="% change at annual rate", height=240, date_fmt="%Y Q%q"))
-    st.caption("Nonfarm business labor productivity (BLS). Utilization-adjusted TFP has been roughly flat, "
-               "so there is no clear AI productivity signal in the aggregate yet.")
+    st.caption("Output per hour worked in the business sector (BLS), % change at an annual rate. Productivity is "
+               "the payoff the investment is supposed to deliver. So far the gains look like firms getting more from "
+               "existing staff; a measure that strips out how hard people and machines are worked has barely moved.")
 
     st.download_button("Download real-economy series (CSV)",
                        raw.pivot_table(index="date", columns="name", values="value").reset_index().to_csv(index=False).encode(),
@@ -806,9 +911,11 @@ def real_economy_page():
 # ---------------------------------------------------------------------------
 def firm_page():
     st.title("Firm level: hyperscaler spending and funding")
+    st.caption("Hyperscalers: Microsoft, Alphabet, Amazon, Meta, Oracle. Neoclouds (CoreWeave, Nebius) rent GPU "
+               "capacity to AI labs and hyperscalers and fund most of their buildout with debt.")
     st.caption("Quarterly cash-flow statements (FMP if a key is set, otherwise Yahoo Finance), company capex "
                f"guidance and bond issuance (reference figures as of {ref.AS_OF}).")
-    cf, src = load_cash_flows(tuple(HYPERSCALERS), fmp_key)
+    cf, src = load_cash_flows(tuple(CAPEX_FIRMS), fmp_key)
 
     c = st.columns(len(ref.FIRM_FACTS))
     for col, (label, value, detail, s) in zip(c, ref.FIRM_FACTS):
@@ -820,8 +927,9 @@ def firm_page():
     else:
         st.caption("$B per quarter. Capex = purchases of property and equipment (excludes finance leases, so it "
                    "runs below company-reported capex). Free cash flow = operating cash flow − capex.")
-        cols = st.columns(len(HYPERSCALERS))
-        for col, (sym, name) in zip(cols, HYPERSCALERS.items()):
+        firms = list(CAPEX_FIRMS.items())
+        cols = [c for i in range(0, len(firms), 4) for c in st.columns(4)]
+        for col, (sym, name) in zip(cols, firms):
             d = cf[cf["symbol"] == sym]
             with col:
                 if d.empty:
@@ -838,7 +946,7 @@ def firm_page():
                                                                 range=[BLUE, MA_COLOR]),
                                     legend=alt.Legend(title=None, orient="top") if sym == "MSFT" else None),
                     tooltip=["q:N", "Series:N", alt.Tooltip("value:Q", format=",.1f", title="$B")])
-                show(axis_cfg(ch.properties(title=name, height=220)))
+                show(name="capex_vs_cash_flow_" + sym.lower(), chart=axis_cfg(ch.properties(title=name, height=220)))
         latest = cf.sort_values("quarter").groupby("symbol").tail(1)
         ttm = cf.sort_values("quarter").groupby("symbol").tail(4).groupby("symbol")[["capex", "ocf", "fcf"]].sum()
         t = latest.set_index("symbol")[["company", "quarter", "capex", "ocf", "fcf", "debt"]].join(
@@ -863,14 +971,14 @@ def firm_page():
         g = pd.DataFrame([(co, lab, v) for co, j, a, ju, _ in ref.CAPEX_GUIDANCE
                           for lab, v in [("Jan 2026", j), ("Apr 2026", a), ("Jul 2026", ju)]],
                          columns=["Company", "Guide", "Capex"])
-        show(grouped_bars(g, "Company", "Guide", "Capex", ["Jan 2026", "Apr 2026", "Jul 2026"],
+        show(name="capex_guidance_2026", chart=grouped_bars(g, "Company", "Guide", "Capex", ["Jan 2026", "Apr 2026", "Jul 2026"],
                           ["#c9c7c0", MA_COLOR, BLUE], fmt="$,.0f", x_title="$B (midpoint of range)"))
         st.caption("Microsoft's July guide is lower only because data center leases moved from finance to "
                    "operating leases (~$190B like-for-like).")
     with r:
         st.subheader("Hyperscaler bond issuance")
         b = pd.DataFrame(ref.HYPERSCALER_BONDS, columns=["Year", "Issuance", "Share of US IG supply %"])
-        show(cat_bars(b, "Year", "Issuance", fmt="$,.0f", y_title="$B", height=300, highlight_last=True))
+        show(name="hyperscaler_bond_issuance", chart=cat_bars(b, "Year", "Issuance", fmt="$,.0f", y_title="$B", height=300, highlight_last=True))
         st.caption("Alphabet, Amazon, Meta, Microsoft and Oracle. Share of US investment-grade supply: "
                    + ", ".join(f"{y} {s}%" for y, _, s in ref.HYPERSCALER_BONDS[-3:]) + ".")
 
@@ -891,7 +999,7 @@ def firm_page():
     g27 = pd.DataFrame(rows, columns=["Company", "Basis", "Capex"])
     l, r = st.columns([3, 2])
     with l:
-        show(grouped_bars(g27, "Company", "Basis", "Capex", [g for g in groups if g in set(g27["Basis"])],
+        show(name="capex_outlook_2027", chart=grouped_bars(g27, "Company", "Basis", "Capex", [g for g in groups if g in set(g27["Basis"])],
                           [MA_COLOR, BLUE, ORANGE], fmt="$,.0f", x_title="$B",
                           sort=[c[0] for c in ref.CAPEX_2027]))
         est = [(co, g26, e) for co, g26, e, *_ in ref.CAPEX_2027 if g26 and e]
@@ -916,62 +1024,150 @@ def markets_page():
     st.caption("Daily closes from FMP (with a key) or Yahoo Finance; ICE BofA option-adjusted spreads via FRED; "
                f"ratings, hyperscaler spreads and token prices are reference figures as of {ref.AS_OF}.")
     with st.sidebar:
-        tickers = st.multiselect("AI stocks", list(AI_TICKERS), default=DEFAULT_TICKERS, key="mk_tickers",
+        segs = st.multiselect("Segments in the stock table", list(AI_SEGMENTS), default=DEFAULT_SEGMENTS,
+                              key="mk_segments")
+        seg_tickers = [t for s_ in segs for t in AI_SEGMENTS[s_]]
+        tickers = st.multiselect("Stocks", seg_tickers, default=seg_tickers, key=f"mk_tickers_{'_'.join(segs)}",
                                  format_func=lambda t: f"{t} · {AI_TICKERS[t]}")
+        etfs = st.multiselect("Benchmark funds", list(AI_ETFS), default=DEFAULT_ETFS, key="mk_etfs",
+                              format_func=lambda t: f"{t} · {AI_ETFS[t]}")
         extra = st.text_input("Other tickers (comma-separated)", key="mk_extra")
         sessions = st.slider("Sessions in daily-move grid", 10, 60, 20, 5, key="mk_sessions")
-    tickers = list(dict.fromkeys(tickers + [t.strip().upper() for t in extra.split(",") if t.strip()]))
-    names = {t: AI_TICKERS.get(t, t) for t in tickers}
+    extra_t = [t.strip().upper() for t in extra.split(",") if t.strip()]
+    stocks = list(dict.fromkeys(tickers + [t for t in extra_t if t not in BENCHMARKS]))
+    etfs = list(dict.fromkeys(etfs + [t for t in extra_t if t in BENCHMARKS]))
+    names = {**AI_TICKERS, **AI_ETFS, **{t: t for t in extra_t if t not in AI_TICKERS and t not in AI_ETFS}}
+    seg_of = {**SEGMENT_OF, **{t: "Other" for t in extra_t if t not in SEGMENT_OF}, **{t: "Fund" for t in AI_ETFS}}
 
-    st.subheader("AI stocks")
-    px, psrc, pfail = load_prices(tuple(tickers), f"{min(start_year, date.today().year - 1)}-12-01", fmp_key)
+    # Load every segment member (for the segment baskets) plus the chosen funds and extras
+    universe = tuple(dict.fromkeys(list(AI_TICKERS) + etfs + extra_t))
+    px, psrc, pfail = load_prices(universe, f"{min(start_year, date.today().year - 1)}-12-01", fmp_key)
     if px.empty:
         st.warning("Couldn't load prices. Add an FMP key in the sidebar or install yfinance.")
     else:
         px = px.sort_values(["symbol", "date"])
         px["ret"] = px.groupby("symbol")["close"].pct_change() * 100
+        wide = px.pivot_table(index="date", columns="symbol", values="close").sort_index()
+        win0 = pd.Timestamp(f"{start_year}-01-01")
         ytd0 = pd.Timestamp(date.today().year, 1, 1)
-        rows = []
-        for t, g in px.groupby("symbol"):
-            g = g.set_index("date")["close"]
-            base_ytd = g[g.index < ytd0]
-            rows.append({"Symbol": t, "Name": names.get(t, t), "Date": g.index[-1].strftime("%b %d"),
-                         "Close": g.iloc[-1], "1 day %": (g.iloc[-1] / g.iloc[-2] - 1) * 100 if len(g) > 1 else None,
-                         "5 days %": (g.iloc[-1] / g.iloc[-6] - 1) * 100 if len(g) > 5 else None,
-                         "1 month %": (g.iloc[-1] / g.iloc[-22] - 1) * 100 if len(g) > 21 else None,
-                         "YTD %": (g.iloc[-1] / base_ytd.iloc[-1] - 1) * 100 if len(base_ytd) else None,
-                         "From 52-wk high %": (g.iloc[-1] / g.tail(252).max() - 1) * 100,
-                         "Source": psrc.get(t, "")})
-        tab = pd.DataFrame(rows).set_index("Symbol").reindex([t for t in tickers if t in set(px["symbol"])]).reset_index()
 
-        c = st.columns(min(6, len(tab)))
-        for col, (_, r) in zip(c, tab.head(6).iterrows()):
-            parts = [f"{r['1 day %']:+.2f}%" if pd.notna(r["1 day %"]) else None,
-                     f"YTD {r['YTD %']:+.0f}%" if pd.notna(r["YTD %"]) else None]
-            tile(col, f"{r['Name']}, {r['Date']}", f"{r['Close']:,.2f}",
-                 " · ".join(p for p in parts if p) or None, delta_color="normal")
+        def basket(members):
+            """Equal-weight basket rebalanced daily (average daily return), as a price index."""
+            cols = [m for m in members if m in wide]
+            if not cols:
+                return pd.Series(dtype=float)
+            r = wide[cols].pct_change().mean(axis=1, skipna=True).fillna(0)
+            return (1 + r).cumprod() * 100
 
-        st.markdown(f"**Daily moves, last {sessions} sessions**")
-        show(return_heatmap(px, names, sessions))
-
-        st.markdown("**Performance since the start of the window**")
-        rebased = px[px["date"] >= pd.Timestamp(f"{start_year}-01-01")].copy()
-        rebased["value"] = rebased.groupby("symbol")["close"].transform(lambda s: s / s.iloc[0] * 100)
-        rebased["Series"] = rebased["symbol"].map(names)
-        show(line_chart(rebased[["date", "Series", "value"]], fmt=",.0f", y_title="Index, first day = 100",
-                        height=380, ref_y=100))
+        def stats(g: pd.Series) -> dict:
+            g = g.dropna()
+            if len(g) < 2:
+                return {}
+            before_ytd = g[g.index < ytd0]
+            return {"1 day %": (g.iloc[-1] / g.iloc[-2] - 1) * 100,
+                    "5 days %": (g.iloc[-1] / g.iloc[-6] - 1) * 100 if len(g) > 5 else None,
+                    "1 month %": (g.iloc[-1] / g.iloc[-22] - 1) * 100 if len(g) > 21 else None,
+                    "YTD %": (g.iloc[-1] / before_ytd.iloc[-1] - 1) * 100 if len(before_ytd) else None,
+                    "From 52-wk high %": (g.iloc[-1] / g.tail(252).max() - 1) * 100}
 
         def pos_neg(v):
             if not isinstance(v, (int, float)) or pd.isna(v) or v == 0:
                 return ""
             return f"color: {GOOD if v > 0 else BAD}; font-weight: 600"
         pcts = ["1 day %", "5 days %", "1 month %", "YTD %", "From 52-wk high %"]
-        st.dataframe(tab.style.format({"Close": "{:,.2f}", **{p: "{:+.2f}%" for p in pcts}}, na_rep="—")
-                     .map(pos_neg, subset=pcts), hide_index=True)
+
+        # --- The AI trade by segment ------------------------------------------
+        st.subheader("The AI trade by segment")
+        st.caption("Each segment is an equal-weight basket of its stocks (average daily return, rebalanced daily); "
+                   "dashed lines are the benchmark funds. Segments and members are listed under Sources and notes "
+                   "and can be edited at the top of ai_boom_dashboard.py.")
+        seg_lines, score = {}, []
+        for seg, members in AI_SEGMENTS.items():
+            b = basket(members)
+            if b.empty:
+                continue
+            seg_lines[seg] = b
+            have = [m for m in members if m in wide]
+            score.append({"Segment / fund": seg, "Holdings": f"{len(have)} stocks", **stats(b)})
+        for e in etfs:
+            if e in wide:
+                seg_lines[e] = wide[e]
+                score.append({"Segment / fund": f"{e} · {AI_ETFS.get(e, e)}", "Holdings": "Fund", **stats(wide[e])})
+        rebased = {k: (v[v.index >= win0] / v[v.index >= win0].dropna().iloc[0] * 100)
+                   for k, v in seg_lines.items() if len(v[v.index >= win0].dropna())}
+        seg_names = [k for k in rebased if k in AI_SEGMENTS]
+        fund_names = [k for k in rebased if k not in AI_SEGMENTS]
+        colors = CATEGORICAL[: len(seg_names)] + ["#9a9890", "#c9c7c0", "#7a7974", "#b5b3ab", "#5f5e5a",
+                                                  "#d6d4cc", "#8a8880", "#a8a69e"][: len(fund_names)]
+        show(name="ai_segments_vs_funds", chart=line_chart(to_long({k: rebased[k] for k in seg_names + fund_names}), fmt=",.0f",
+                        y_title="Index, first day in window = 100", height=420, ref_y=100, colors=colors,
+                        dashed=fund_names))
+        sc = pd.DataFrame(score)
+        if not sc.empty:
+            sc = sc.sort_values("YTD %", ascending=False, na_position="last")
+            st.dataframe(sc.style.format({p: "{:+.2f}%" for p in pcts if p in sc}, na_rep="—")
+                         .map(pos_neg, subset=[p for p in pcts if p in sc]), hide_index=True)
+
+        # --- Individual stocks ---------------------------------------------------
+        st.subheader("Individual stocks")
+        shown = [t for t in stocks if t in wide]
+        if not shown:
+            st.info("Pick at least one segment or stock in the sidebar.")
+        else:
+            rows = []
+            for t in shown + [e for e in etfs if e in wide]:
+                g = wide[t].dropna()
+                rows.append({"Symbol": t, "Name": names.get(t, t), "Segment": seg_of.get(t, ""),
+                             "Date": g.index[-1].strftime("%b %d"), "Close": g.iloc[-1], **stats(g),
+                             "Source": psrc.get(t, "")})
+            tab = pd.DataFrame(rows)
+
+            c = st.columns(min(6, len(shown)))
+            for col, (_, r) in zip(c, tab.head(6).iterrows()):
+                parts = [f"{r['1 day %']:+.2f}%" if pd.notna(r.get("1 day %")) else None,
+                         f"YTD {r['YTD %']:+.0f}%" if pd.notna(r.get("YTD %")) else None]
+                tile(col, f"{r['Name']}, {r['Date']}", f"{r['Close']:,.2f}",
+                     " · ".join(p for p in parts if p) or None, delta_color="normal")
+
+            st.markdown(f"**Daily moves, last {sessions} sessions**")
+            show(name="daily_moves", chart=return_heatmap(px[px["symbol"].isin(shown)], names, sessions))
+
+            st.markdown("**Performance since the start of the window**")
+            sel = {names.get(t, t): wide[t] for t in shown}
+            if len(shown) > 1:
+                sel = {BASKET: basket(shown), **sel}
+            for e in etfs:
+                if e in wide:
+                    sel[e] = wide[e]
+            reb = {k: v[v.index >= win0] / v[v.index >= win0].dropna().iloc[0] * 100
+                   for k, v in sel.items() if len(v[v.index >= win0].dropna())}
+            order = list(reb)
+            pal = iter(CATEGORICAL * 3)
+            colors = ["#3b3a37" if n == BASKET else ("#c9c7c0" if n in etfs else next(pal)) for n in order]
+            show(name="stock_performance", chart=line_chart(to_long(reb), fmt=",.0f", y_title="Index, first day = 100", height=380, ref_y=100,
+                            colors=colors, dashed=[e for e in etfs if e in reb]))
+            st.caption(f"Black line = {BASKET.lower()} of the stocks selected. Grey dashed lines = benchmark funds.")
+
+            if len(shown) > 1:
+                avg = {"Symbol": "Average", "Name": f"Average of {len(shown)} AI stocks (equal weight)",
+                       "Segment": "", "Date": "", "Close": None, "Source": "Calculated"}
+                avg.update(tab[tab["Symbol"].isin(shown)][pcts].mean(numeric_only=True).to_dict())
+                tab = pd.concat([tab, pd.DataFrame([avg])], ignore_index=True)
+
+            def row_style(r):
+                if r["Symbol"] == "Average":
+                    return ["font-weight: 700; border-top: 2px solid #8987814d" for _ in r]
+                if r["Symbol"] in etfs:
+                    return ["color: #898781; font-style: italic" if c not in pcts else "" for c in r.index]
+                return ["" for _ in r]
+            st.dataframe(tab.style.format({"Close": "{:,.2f}", **{p: "{:+.2f}%" for p in pcts}}, na_rep="—")
+                         .map(pos_neg, subset=pcts).apply(row_style, axis=1), hide_index=True)
+            st.caption("Grey italic rows = benchmark funds. Average row = simple average across the AI stocks in the "
+                       "table only; funds are left out.")
         if pfail:
             st.caption(f"No prices for: {', '.join(pfail)}")
-        st.download_button("Download prices (CSV)", px.pivot_table(index="date", columns="symbol", values="close")
-                           .reset_index().to_csv(index=False).encode(), file_name="ai_stocks_prices.csv", mime="text/csv")
+        st.download_button("Download prices (CSV)", wide.reset_index().to_csv(index=False).encode(),
+                           file_name="ai_stocks_prices.csv", mime="text/csv")
 
     st.subheader("Credit")
     raw = fred_or_stop(tuple(CREDIT), f"{start_year - 1}-01-01")
@@ -986,13 +1182,13 @@ def markets_page():
          delta_color="inverse", help=ref.ORACLE_CDS["note"])
     l, r = st.columns([3, 2])
     with l:
-        show(line_chart(window(to_long(spreads)), fmt=",.0f", y_title="Basis points over Treasuries", height=320,
+        show(name="credit_spreads", chart=line_chart(window(to_long(spreads)), fmt=",.0f", y_title="Basis points over Treasuries", height=320,
                         colors=[BLUE, ORANGE, BAD]))
         st.caption("Hyperscalers sit in the AA bucket, except Oracle (BBB−). High yield shown for context.")
     with r:
         hs = pd.DataFrame([(b, y, v) for b, a, c2 in ref.HYPERSCALER_SPREADS for y, v in [("2025", a), ("2026", c2)]],
                           columns=["Maturity", "Year", "bp"])
-        show(grouped_bars(hs, "Maturity", "Year", "bp", ["2025", "2026"], [MA_COLOR, BLUE], fmt=",.4~f",
+        show(name="hyperscaler_bond_spreads", chart=grouped_bars(hs, "Maturity", "Year", "bp", ["2025", "2026"], [MA_COLOR, BLUE], fmt=",.4~f",
                           x_title="Median spread, bp"))
         st.caption("Median spreads on Amazon, Alphabet, Meta and Oracle bonds, 2025 vs 2026 issues, and the "
                    "new-issue concession. 78 of 91 2026 bonds traded wider than at issue (Jul 28).")
@@ -1044,7 +1240,7 @@ def markets_page():
                  alt.Tooltip("value:Q", format="$.2f", title="SDLLMTK"), alt.Tooltip("note:N", title="Reading")])
     sd_lab = alt.Chart(sd).mark_text(dy=-12, fontSize=11, fontWeight="bold", color=LABEL_INK).encode(
         x="date:T", y="value:Q", text=alt.Text("value:Q", format="$.2f"))
-    show(axis_cfg((sd_line + sd_lab).properties(height=260)))
+    show(name="silicon_data_token_index", chart=axis_cfg((sd_line + sd_lab).properties(height=260)))
     st.caption("Points are the dated readings reported publicly (the daily series is on Bloomberg and the Silicon "
                "Data portal); lines connect them, so they don't show day-to-day moves. Because the index is "
                "expenditure-weighted, it also falls when usage shifts to cheaper models.")
@@ -1057,14 +1253,18 @@ def markets_page():
         tooltip=[alt.Tooltip("date:T", format="%b %Y"), "model:N", alt.Tooltip("value:Q", format="$.2f")])
     lab = alt.Chart(tp).mark_text(align="left", dx=8, dy=-8, fontSize=11, color=LABEL_INK).encode(
         x="date:T", y="value:Q", text="model:N")
-    show(axis_cfg((ch + lab).properties(height=280, padding={"right": 90})))
+    show(name="token_price_gpt4_level", chart=axis_cfg((ch + lab).properties(height=280, padding={"right": 90})))
     st.caption("Cheapest model matching GPT-4 on MMLU. Flagship prices have risen over the past year even as the "
                "price of a fixed capability collapsed.")
     sources_box(tuple(CREDIT), refs=[ref.REUTERS_SPREADS, ref.ORACLE_CDS["source"], ref.CDS_BASELINE_SOURCE]
                 + list(dict.fromkeys(v[5] for v in ref.CDS_5Y.values()))
                 + list(dict.fromkeys(x[3] for x in ref.SDLLMTK)) + [ref.EPOCH, ref.BENCHLM]
                 + list(dict.fromkeys(r[6] for r in ref.RATINGS)),
-                notes=["Prices: " + ", ".join(f"{k} {v}" for k, v in psrc.items())] if not px.empty else [])
+                notes=[f"**{seg}:** " + ", ".join(f"{t} ({n})" for t, n in m.items()) for seg, m in AI_SEGMENTS.items()]
+                + ["**Funds:** " + "; ".join(f"{t} = {n}" for t, n in AI_ETFS.items()),
+                   "Bloomberg's own AI indexes (e.g. BAIVT, the AI Value Chain Equal Weight Index) need a terminal; "
+                   "AIVC is the ETF that tracks BAIVT."]
+                + (["Prices: " + ", ".join(sorted({f'{v}' for v in psrc.values()}))] if not px.empty else []))
 
 
 # ---------------------------------------------------------------------------
@@ -1089,32 +1289,32 @@ def leading_page():
         st.subheader("AI-lab revenue run-rates")
         ar = pd.DataFrame(ref.AI_REVENUE, columns=["date", "Series", "value", "note"])
         ar["date"] = pd.to_datetime(ar["date"])
-        show(line_chart(ar, fmt="$,.0f", y_title="$B annualized", height=300, colors=[BLUE, ORANGE],
+        show(name="ai_lab_revenue", chart=line_chart(ar, fmt="$,.0f", y_title="$B annualized", height=300, colors=[BLUE, ORANGE],
                         date_fmt="%b %Y"))
         st.caption("Reported run-rates are extrapolations, not audited revenue; the two labs may measure differently.")
     with r:
         st.subheader("Token volume on OpenRouter")
         orr = pd.DataFrame([(d, v) for d, v, *_ in ref.OPENROUTER], columns=["date", "value"])
         orr["date"], orr["Series"] = pd.to_datetime(orr["date"]), "Tokens per week"
-        show(line_chart(orr, fmt=",.4~g", y_title="Trillion tokens per week (log)", height=300, log=True,
+        show(name="openrouter_tokens", chart=line_chart(orr, fmt=",.4~g", y_title="Trillion tokens per week (log)", height=300, log=True,
                         legend=False, date_fmt="%b %Y"))
         st.caption("One aggregator, not the whole market.")
     l, r = st.columns(2)
     with l:
         st.subheader("Korean chip exports keep setting records")
         k = pd.DataFrame(ref.KOREA_CHIP_RECORDS, columns=["Month", "value"])
-        show(cat_bars(k, "Month", "value", fmt="$,.1f", y_title="$B per month", highlight_last=True))
+        show(name="korea_chip_exports", chart=cat_bars(k, "Month", "value", fmt="$,.1f", y_title="$B per month", highlight_last=True))
         st.caption("2026 monthly records only (Jan, Apr and Jul were not records).")
     with r:
         st.subheader("TSMC monthly revenue")
         tm = pd.DataFrame(ref.TSMC_MONTHLY, columns=["Month", "value", "yoy"])
         tm["Month"] = pd.to_datetime(tm["Month"] + "-01").dt.strftime("%b %Y")
-        show(cat_bars(tm, "Month", "value", fmt=",.0f", y_title="NT$ billions", highlight_last=True))
+        show(name="tsmc_monthly_revenue", chart=cat_bars(tm, "Month", "value", fmt=",.0f", y_title="NT$ billions", highlight_last=True))
         st.caption("YoY: " + ", ".join(f"{m} {y:+.1f}%" for m, _, y in tm.itertuples(index=False)) + ".")
     st.subheader("Share of US firms using AI")
     bt = pd.DataFrame(ref.BTOS_AI_USE, columns=["date", "value"])
     bt["date"], bt["Series"] = pd.to_datetime(bt["date"]), "Firms using AI"
-    show(line_chart(bt, fmt=".1f", y_title="% of firms, past two weeks", height=240, legend=False, zero=True,
+    show(name="btos_ai_use", chart=line_chart(bt, fmt=".1f", y_title="% of firms, past two weeks", height=240, legend=False, zero=True,
                     date_fmt="%b %d, %Y"))
     st.caption("Census BTOS: used AI in any business function. The question was broadened in Nov 2025.")
     sources_box(refs=[nv["source"], ref.TSMC_SOURCE, ref.KOREA_SOURCE, ref.DRAM["source"], ref.AI_REVENUE_SOURCE,
@@ -1149,17 +1349,17 @@ def labor_page():
     l, r = st.columns(2)
     with l:
         st.subheader("Unemployment: young workers vs all")
-        show(line_chart(window(to_long({"Age 16-24": y, "All workers": u})), fmt=".1f", y_title="Percent",
+        show(name="unemployment_young_vs_all", chart=line_chart(window(to_long({"Age 16-24": y, "All workers": u})), fmt=".1f", y_title="Percent",
                         height=280, colors=[ORANGE, BLUE], date_fmt="%b %Y"))
     with r:
         st.subheader("Software development postings")
-        show(line_chart(window(to_long({"Indeed software postings": sw})), fmt=".1f", y_title="Index, Feb 2020 = 100",
+        show(name="software_postings", chart=line_chart(window(to_long({"Indeed software postings": sw})), fmt=".1f", y_title="Index, Feb 2020 = 100",
                         height=280, legend=False, ref_y=100))
         st.caption("Most of the 2026 rebound is senior and AI-titled roles (Indeed Hiring Lab).")
 
     st.subheader("Tech employment, year over year")
     st.caption("% change from 12 months earlier, payroll survey.")
-    show(line_chart(window(to_long({"Computer systems design": yoy(csd, 12), "Data processing & hosting": yoy(dp, 12),
+    show(name="tech_employment_yoy", chart=line_chart(window(to_long({"Computer systems design": yoy(csd, 12), "Data processing & hosting": yoy(dp, 12),
                                     "Information sector": yoy(info, 12)})), fmt="+.1f", y_title="% YoY", height=300,
                     zero=True, date_fmt="%b %Y"))
 
@@ -1167,7 +1367,7 @@ def labor_page():
     with l:
         st.subheader("Announced job cuts citing AI")
         cuts = pd.DataFrame(ref.AI_JOB_CUTS_YTD, columns=["Month", "value"])
-        show(cat_bars(cuts, "Month", "value", fmt=",.0f", y_title="2026 year to date", height=280,
+        show(name="ai_job_cuts", chart=cat_bars(cuts, "Month", "value", fmt=",.0f", y_title="2026 year to date", height=280,
                       ref_y=ref.AI_JOB_CUTS_2025, ref_label=f"All of 2025: {ref.AI_JOB_CUTS_2025:,}"))
         st.caption(f"Tech-sector cuts through August: {ref.TECH_JOB_CUTS_YTD_AUG['value']:,} "
                    f"({ref.TECH_JOB_CUTS_YTD_AUG['yoy_pct']:+d}% YoY). AI-cited share of all cuts ≈ 22%.")
