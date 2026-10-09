@@ -142,19 +142,52 @@ HYPERSCALER_SPREADS = [
     ("2–4 yr", 30, 40), ("5–7 yr", 50, 60), ("20+ yr", 108.5, 118), ("New-issue concession", 2.25, 12),
 ]
 
+# Long-term issuer / senior unsecured ratings as reported. Notches above junk are computed in the
+# dashboard from the S&P rating (Moody's if S&P is missing): BBB-/Baa3 = 0, junk is negative.
+MB = ("MarketBeat, 'Oracle is one step from junk'", "https://www.marketbeat.com/articles/oracle-is-one-step-from-junkcan-it-afford-the-ai-boom/")
 RATINGS = [
-    # company, S&P, Moody's, notches above junk (S&P scale), as of, note, source
-    ("Microsoft", "AAA", "—", 9, "2026", "No new bonds in 2026 to date",
-     ("MarketBeat", "https://www.marketbeat.com/articles/oracle-is-one-step-from-junkcan-it-afford-the-ai-boom/")),
-    ("Alphabet", "AA+", "—", 8, "2026", "Raised $85B of equity alongside debt",
-     ("MarketBeat", "https://www.marketbeat.com/articles/oracle-is-one-step-from-junkcan-it-afford-the-ai-boom/")),
-    ("Amazon", "AA", "—", 7, "2026", "TTM free cash flow negative after Q2",
-     ("MarketBeat", "https://www.marketbeat.com/articles/oracle-is-one-step-from-junkcan-it-afford-the-ai-boom/")),
-    ("Meta", "AA-", "Aa3", 6, "Aug 2026", "Off-balance-sheet data center JVs add to obligations",
+    # company, segment, S&P, Moody's, Fitch, as of, note, source
+    ("Microsoft", "Hyperscalers", "AAA", "—", "—", "2026", "No new bonds in 2026 to date", MB),
+    ("Alphabet", "Hyperscalers", "AA+", "—", "—", "2026", "Raised $85B of equity alongside debt", MB),
+    ("Amazon", "Hyperscalers", "AA", "—", "—", "2026", "TTM free cash flow negative after Q2", MB),
+    ("Meta", "Hyperscalers", "AA-", "Aa3", "—", "Aug 2026", "Off-balance-sheet data center JVs add to obligations",
      ("Financial News (Korea), Aug 30, 2026", "https://en.fnnews.com/news/202608291254188090")),
-    ("Oracle", "BBB-", "—", 0, "Jul 9, 2026", "Cut from BBB, stable outlook; 5-yr CDS above 200bp",
+    ("Oracle", "Hyperscalers", "BBB-", "—", "—", "Jul 9, 2026", "S&P cut from BBB, stable; one notch above junk",
      ("PPC Land", "https://ppc.land/s-p-cuts-oracle-to-bbb-as-ai-buildout-widens-cash-deficit-to-42bn/")),
+    ("Nvidia", "Chips", "AA", "Aa1", "—", "Jun 2026", "S&P upgraded from AA- (Jun 2026); Moody's Aa1, positive (Jan 2026)",
+     ("Yahoo Finance: S&P upgrades Nvidia to AA (Jun 11, 2026)",
+      "https://finance.yahoo.com/markets/stocks/articles/p-global-ratings-upgrades-nvidia-211417548.html")),
+    ("TSMC", "Chips", "AA-", "Aa3", "—", "Oct 2026", "Both agencies on positive outlook",
+     ("TSMC investor relations: credit ratings", "https://investor.tsmc.com/english/credit-rating")),
+    ("Broadcom", "Chips", "A-", "A3", "BBB+", "Jun 2026", "S&P called its $35B AI XPV financing tranche 'credit negative' (Jun 2026)",
+     ("KuCoin News: S&P on Broadcom AI tranche (Jun 11, 2026)",
+      "https://www.kucoin.com/news/flash/s-p-global-ratings-flags-broadcom-s-ai-tranche-as-credit-negative")),
+    ("AMD", "Chips", "A", "A3", "—", "2025", "Moody's A3 is the last confirmed action (2022)",
+     ("Insider Monkey: S&P upgrades AMD to A",
+      "https://www.insidermonkey.com/blog/sp-global-upgrades-advanced-micro-devices-inc-amd-to-a-rating-ai-growth-and-strong-market-share-propel-outlook-1421521/")),
+    ("Micron", "Chips", "BBB+", "Baa1", "—", "Aug 2026", "Upgraded by both in Jul–Aug 2026 on AI memory demand; S&P outlook positive",
+     ("Investing.com: Moody's upgrades Micron (Jul 30, 2026)",
+      "https://www.investing.com/news/stock-market-news/moodys-upgrades-micron-rating-on-customer-agreements-ai-demand-93CH-4825934")),
+    ("Intel", "Chips", "BBB", "Baa2", "BBB", "2025", "Downgraded by all three in 2024–25; Fitch outlook negative",
+     ("Calcalist: Intel downgraded (Aug 2025)", "https://www.calcalistech.com/ctechnews/article/g8hxy1pev")),
+    ("CoreWeave", "Neoclouds & AI", "B+", "Ba3", "—", "Apr 2026", "Junk. Its $8.5B GPU-backed facility got an investment-grade rating; 5-yr CDS >855bp",
+     ("cbonds: Moody's affirms CoreWeave Ba3 (Apr 10, 2026)", "https://cbonds.com/news/3865521/")),
+    ("SpaceX (incl. AI unit)", "Neoclouds & AI", "BBB", "Baa1", "BBB+", "Jun 18, 2026", "First ratings after IPO; bonds trade wider than BBB peers",
+     ("IndexBox: SpaceX earns investment-grade ratings (Jun 2026)",
+      "https://www.indexbox.io/blog/spacex-receives-first-investment-grade-credit-ratings-from-moodys-fitch-and-sp-global/")),
+    ("Dell", "Servers & data centers", "BBB+", "Baa2", "BBB+", "Aug 14, 2026", "Moody's outlook positive",
+     ("Dell fixed income information", "https://investors.delltechnologies.com/financial-information/fixed-income-information")),
+    ("Equinix", "Servers & data centers", "BBB+", "—", "BBB+", "Mar 2026", "Largest data center REIT; stable outlooks",
+     ("Benzinga: Equinix BBB+ (Mar 25, 2026)",
+      "https://www.benzinga.com/Opinion/26/03/51456570/equinix-has-a-bbb-rating-and-a-51-percent-dividend-buffer-the-capex-cycle-is-the-variable-worth-watching")),
+    ("Constellation Energy", "Power", "—", "Baa1", "—", "Apr 2024", "Moody's upgrade on nuclear and data center demand",
+     ("Constellation: Moody's upgrade (Apr 3, 2024)",
+      "https://investors.constellationenergy.com/news-releases/news-release-details/moodys-upgrades-constellations-credit-rating-policy-support-and")),
+    ("Vistra", "Power", "BBB-", "—", "BBB-", "Mar 2026", "Became investment grade at S&P (Dec 2025) and Fitch (Mar 2026)",
+     ("Vistra press release (Mar 17, 2026)",
+      "https://www.prnewswire.com/news-releases/vistra-achieves-investmentgrade-credit-ratings-from-sp-and-fitch-302716271.html")),
 ]
+RATING_SEGMENTS = ["Hyperscalers", "Chips", "Neoclouds & AI", "Servers & data centers", "Power"]
 # 5-year CDS, bp. Public press readings only: dealer CDS quotes (Bloomberg, LSEG, S&P, ICE) are
 # not free, so the latest public figures are from late July to mid-August 2026. Replace with
 # current quotes from your terminal when you have them. None = no public figure found.
@@ -172,6 +205,10 @@ CDS_5Y = {
     "Amazon": (67.5, "65–70", "Jul 28, 2026", 38, "Mid-Nov 2025",
                ("KuCoin News, citing Bloomberg (Jul 28, 2026)",
                 "https://www.kucoin.com/news/flash/meta-and-broadcom-cds-hit-record-highs-amid-ai-financing-risks")),
+    "Nvidia": (82, "82", "Jul 27, 2026", None, None,
+               ("Protos, citing CDS data (Jul 29, 2026)", "https://protos.com/credit-default-swaps-forecast-ai-bankruptcies/")),
+    "CoreWeave": (855, "855+", "Jul 28, 2026", None, None,
+                  ("Protos, citing CDS data (Jul 29, 2026)", "https://protos.com/credit-default-swaps-forecast-ai-bankruptcies/")),
     "Microsoft": (None, "—", None, 34, "Mid-Nov 2025",
                   ("ZeroHedge, citing S&P data (Nov 17, 2025)",
                    "https://www.zerohedge.com/markets/stocks-slide-after-amazon-shocks-another-massive-bond-offering-rebound-news-boaz-weinsten")),

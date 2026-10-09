@@ -460,6 +460,20 @@ def nonres_breakdown(df: pd.DataFrame, measure: str) -> tuple:
     return growth, parts.dropna(how="all"), total
 
 
+SP_SCALE = ["AAA", "AA+", "AA", "AA-", "A+", "A", "A-", "BBB+", "BBB", "BBB-", "BB+", "BB", "BB-", "B+", "B", "B-",
+            "CCC+", "CCC", "CCC-"]
+MOODYS_SCALE = ["Aaa", "Aa1", "Aa2", "Aa3", "A1", "A2", "A3", "Baa1", "Baa2", "Baa3", "Ba1", "Ba2", "Ba3", "B1", "B2",
+                "B3", "Caa1", "Caa2", "Caa3"]
+
+
+def notches_above_junk(sp: str, moodys: str = "—"):
+    """Steps above the junk line: BBB-/Baa3 = 0, AAA/Aaa = 9, junk ratings negative."""
+    for rating, scale in ((sp, SP_SCALE), (moodys, MOODYS_SCALE)):
+        if rating in scale:
+            return 9 - scale.index(rating)
+    return None
+
+
 def yoy(s: pd.Series, periods: int) -> pd.Series:
     return s.pct_change(periods, fill_method=None) * 100
 
@@ -1280,28 +1294,56 @@ def markets_page():
         st.caption("Median spreads on Amazon, Alphabet, Meta and Oracle bonds, 2025 vs 2026 issues, and the "
                    "new-issue concession. 78 of 91 2026 bonds traded wider than at issue (Jul 28).")
 
-    st.markdown("**Credit ratings and 5-year CDS**")
+    st.markdown("**Credit ratings and 5-year CDS across the AI trade**")
     rows = []
-    for co, sp, md, notch, asof, note, _ in ref.RATINGS:
+    for co, seg, sp, md, fi, asof, note, _ in ref.RATINGS:
         latest, latest_lab, cds_date, base, base_date, _ = ref.CDS_5Y.get(co, (None, "—", None, None, None, None))
-        rows.append({"Company": co, "S&P": sp, "Moody's": md, "Notches above junk": notch,
+        rows.append({"Company": co, "Segment": seg, "S&P": sp, "Moody's": md, "Fitch": fi,
+                     "Notches above junk": notches_above_junk(sp, md),
                      "5-yr CDS, bp": latest_lab, "CDS as of": cds_date or "—",
                      "Early 2026, bp": base, "Baseline date": base_date or "—",
                      "Change, bp": (latest - base) if latest is not None and base is not None else None,
                      "Rating as of": asof, "Note": note})
     rt = pd.DataFrame(rows)
+    seg_pick = st.segmented_control("Segment", ["All"] + ref.RATING_SEGMENTS, default="All", key="mk_rating_seg",
+                                    label_visibility="collapsed") or "All"
+    view = rt if seg_pick == "All" else rt[rt["Segment"] == seg_pick]
+
+    # Ladder: each company's distance from the junk line (BBB-/Baa3 = 0)
+    lad = view.dropna(subset=["Notches above junk"]).copy()
+    if not lad.empty:
+        lad["Rating"] = [sp if sp != "—" else md + " (Moody's)" for sp, md in zip(lad["S&P"], lad["Moody's"])]
+        order = lad.sort_values("Notches above junk", ascending=False)["Company"].tolist()
+        segs = [g for g in ref.RATING_SEGMENTS if g in set(lad["Segment"])]
+        y = alt.Y("Company:N", sort=order, title=None, axis=alt.Axis(labelLimit=220))
+        bars = alt.Chart(lad).mark_bar(cornerRadiusEnd=4, height=14).encode(
+            y=y, x=alt.X("Notches above junk:Q", title="Notches above junk (0 = BBB-, the lowest investment grade)",
+                         scale=alt.Scale(domain=[min(-5, lad["Notches above junk"].min() - 1), 10])),
+            color=alt.Color("Segment:N", scale=alt.Scale(domain=ref.RATING_SEGMENTS, range=CATEGORICAL[:5]),
+                            legend=alt.Legend(title=None, orient="top") if len(segs) > 1 else None),
+            tooltip=["Company:N", "Segment:N", "S&P:N", "Moody's:N", "Fitch:N", "Rating as of:N", "Note:N"])
+        labels = alt.Chart(lad).mark_text(align="left", dx=5, fontSize=11, fontWeight="bold", color=LABEL_INK).encode(
+            y=y, x="Notches above junk:Q", text="Rating:N")
+        junk = alt.Chart(pd.DataFrame({"x": [-0.5], "t": ["Junk ←"]})).mark_rule(color=BAD, strokeDash=[4, 3]).encode(x="x:Q")
+        show(name="ai_credit_ratings", data=view, chart=axis_cfg((bars + labels + junk).properties(height=24 * len(lad) + 50)))
 
     def widen_red(v):
         if not isinstance(v, (int, float)) or pd.isna(v) or v == 0:
             return ""
         return f"color: {BAD if v > 0 else GOOD}; font-weight: 600"
-    st.dataframe(rt.style.format({"Early 2026, bp": "{:.0f}", "Change, bp": "{:+.0f}"}, na_rep="—")
-                 .map(lambda v: f"color: {BAD}; font-weight: 700" if v == 0 else "", subset=["Notches above junk"])
-                 .map(widen_red, subset=["Change, bp"]), hide_index=True)
-    st.caption("CDS = cost per year to insure $10M of debt, in basis points (red = wider since the baseline). "
-               "Dealer CDS quotes aren't free: these are the latest levels reported in the press (late July 2026), "
-               "and Alphabet, Amazon and Microsoft baselines are mid-Nov 2025 readings, the closest public figures "
-               "to the start of 2026. Paste current quotes into CDS_5Y in ai_boom_reference.py to update.")
+
+    def junk_red(v):
+        if not isinstance(v, (int, float)) or pd.isna(v):
+            return ""
+        return f"color: {BAD}; font-weight: 700" if v <= 0 else ""
+    st.dataframe(view.style.format({"Early 2026, bp": "{:.0f}", "Change, bp": "{:+.0f}", "Notches above junk": "{:.0f}"},
+                                   na_rep="—")
+                 .map(junk_red, subset=["Notches above junk"]).map(widen_red, subset=["Change, bp"]), hide_index=True)
+    st.caption("Notches above junk use S&P's rating (Moody's where S&P is missing): 0 = BBB−, the last step before "
+               "junk; negative = junk. CDS = yearly cost to insure $10M of debt, in bp; red = wider since the baseline. "
+               "Dealer CDS quotes aren't free, so these are the latest levels reported in the press (late July 2026); "
+               "Alphabet, Amazon and Microsoft baselines are mid-Nov 2025 readings. Edit RATINGS and CDS_5Y in "
+               "ai_boom_reference.py to update.")
 
     st.subheader("Token prices")
     ti = ref.TOKEN_INDEX
@@ -1346,7 +1388,7 @@ def markets_page():
     sources_box(tuple(CREDIT), refs=[ref.REUTERS_SPREADS, ref.ORACLE_CDS["source"], ref.CDS_BASELINE_SOURCE]
                 + list(dict.fromkeys(v[5] for v in ref.CDS_5Y.values()))
                 + list(dict.fromkeys(x[3] for x in ref.SDLLMTK)) + [ref.EPOCH, ref.BENCHLM]
-                + list(dict.fromkeys(r[6] for r in ref.RATINGS)),
+                + list(dict.fromkeys(r[7] for r in ref.RATINGS)),
                 notes=[f"**{seg}:** " + ", ".join(f"{t} ({n})" for t, n in m.items()) for seg, m in AI_SEGMENTS.items()]
                 + ["**Funds:** " + "; ".join(f"{t} = {n}" for t, n in AI_ETFS.items()),
                    "Bloomberg's own AI indexes (e.g. BAIVT, the AI Value Chain Equal Weight Index) need a terminal; "
