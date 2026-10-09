@@ -1018,6 +1018,40 @@ def firm_page():
     for col, (label, value, detail, s) in zip(c, ref.FIRM_FACTS):
         tile(col, label, value, help=f"{detail} Source: {s[0]}")
 
+    # --- Combined capex vs combined operating cash flow --------------------------
+    st.subheader("Combined capex vs combined operating cash flow")
+    if not cf.empty:
+        agg = cf.assign(q=cf["quarter"].dt.to_period("Q")).groupby("q").agg(
+            capex=("capex", "sum"), ocf=("ocf", "sum"), firms=("symbol", "nunique"),
+            names=("company", lambda x: ", ".join(sorted(x.dropna()))))
+        full = agg["firms"].max()
+        agg = agg[agg["firms"] == full]  # only quarters where every firm has reported
+        agg.index = agg.index.to_timestamp()
+        agg.index.name = "date"
+        if len(agg):
+            last = agg.iloc[-1]
+            c = st.columns(4)
+            tile(c[0], f"Combined capex, {qlabel(agg.index[-1])}", f"${last['capex']:,.0f}B",
+                 f"{(last['capex'] / agg['capex'].iloc[-5] - 1) * 100:+.0f}% YoY" if len(agg) >= 5 else None)
+            tile(c[1], "Combined operating cash flow", f"${last['ocf']:,.0f}B",
+                 f"{(last['ocf'] / agg['ocf'].iloc[-5] - 1) * 100:+.0f}% YoY" if len(agg) >= 5 else None)
+            fcf_ = last["ocf"] - last["capex"]
+            tile(c[2], "Free cash flow (OCF − capex)", f"{'−' if fcf_ < 0 else '+'}${abs(fcf_):,.0f}B", delta_color="off")
+            tile(c[3], "Capex as % of operating cash flow", f"{last['capex'] / last['ocf'] * 100:.0f}%",
+                 f"{agg['capex'].iloc[0] / agg['ocf'].iloc[0] * 100:.0f}% in {qlabel(agg.index[0])}",
+                 delta_color="off")
+            show(name="combined_capex_vs_operating_cash_flow",
+                 data=agg.reset_index()[["date", "capex", "ocf"]].rename(
+                     columns={"capex": "Combined capex, $B", "ocf": "Combined operating cash flow, $B"}),
+                 chart=line_chart(to_long({"Combined capex": agg["capex"], "Combined operating cash flow": agg["ocf"]}),
+                                  fmt="$,.0f", y_title="$B per quarter", height=320, colors=[BLUE, MA_COLOR],
+                                  zero=True, date_fmt="%Y Q%q"))
+            st.caption(f"Sum across {full} firms ({last['names']}). Only quarters where all of them have reported are "
+                       "shown. When the blue line crosses above the grey one, the group spends more on capex than its "
+                       "operations bring in, and the gap is funded with cash reserves or new debt.")
+        else:
+            st.caption("Not enough overlapping quarters to sum.")
+
     st.subheader("Capex against operating cash flow")
     if cf.empty:
         st.warning("Couldn't load cash-flow statements. Add an FMP key in the sidebar or check that yfinance is installed.")
