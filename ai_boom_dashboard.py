@@ -1036,14 +1036,22 @@ def firm_page():
                 long = pd.concat([d.assign(Series="Capex", value=d["capex"]),
                                   d.assign(Series="Operating cash flow", value=d["ocf"])])
                 long["q"] = long["quarter"].apply(qlabel)
-                ch = alt.Chart(long).mark_bar(cornerRadiusEnd=3).encode(
+                order = ["Capex", "Operating cash flow"]
+                top = max(long["value"].max(), 0) * 1.18 or 1
+                bottom = min(long["value"].min(), 0) * 1.18
+                base = alt.Chart(long).encode(
                     x=alt.X("q:N", title=None, axis=alt.Axis(labelAngle=-45)),
-                    xOffset="Series:N", y=alt.Y("value:Q", title=None),
-                    color=alt.Color("Series:N", scale=alt.Scale(domain=["Capex", "Operating cash flow"],
-                                                                range=[BLUE, MA_COLOR]),
+                    xOffset=alt.XOffset("Series:N", sort=order),
+                    y=alt.Y("value:Q", title=None, scale=alt.Scale(domain=[bottom, top])))
+                bars = base.mark_bar(cornerRadiusEnd=3).encode(
+                    color=alt.Color("Series:N", scale=alt.Scale(domain=order, range=[BLUE, MA_COLOR]),
                                     legend=alt.Legend(title=None, orient="top") if sym == "MSFT" else None),
                     tooltip=["q:N", "Series:N", alt.Tooltip("value:Q", format=",.1f", title="$B")])
-                show(name="capex_vs_cash_flow_" + sym.lower(), chart=axis_cfg(ch.properties(title=name, height=220)))
+                labels = base.mark_text(baseline="bottom", dy=-3, fontSize=9, color=LABEL_INK).encode(
+                    text=alt.Text("value:Q", format=",.0f"))
+                show(name="capex_vs_cash_flow_" + sym.lower(),
+                     data=long[["q", "Series", "value"]].rename(columns={"q": "Quarter", "value": "$B"}),
+                     chart=axis_cfg((bars + labels).properties(title=name, height=240)))
         latest = cf.sort_values("quarter").groupby("symbol").tail(1)
         ttm = cf.sort_values("quarter").groupby("symbol").tail(4).groupby("symbol")[["capex", "ocf", "fcf"]].sum()
         t = latest.set_index("symbol")[["company", "quarter", "capex", "ocf", "fcf", "debt"]].join(
@@ -1401,15 +1409,19 @@ def leading_page():
             long = pd.concat([g.assign(Series="Capex", value=g["Capex"]),
                               g.assign(Series=f"{seg} revenue", value=g["Cloud revenue"])])
             names_ = ["Capex", f"{seg} revenue"]
-            ch = alt.Chart(long).mark_bar(cornerRadiusEnd=3).encode(
+            base = alt.Chart(long).encode(
                 x=alt.X("Quarter:N", title=None, sort=[qlabel(pd.Timestamp(d)) for d in q_dates],
                         axis=alt.Axis(labelAngle=0, labelFontSize=10)),
-                xOffset=alt.XOffset("Series:N", sort=names_), y=alt.Y("value:Q", title="$B per quarter"),
+                xOffset=alt.XOffset("Series:N", sort=names_),
+                y=alt.Y("value:Q", title="$B per quarter", scale=alt.Scale(domain=[0, long["value"].max() * 1.18])))
+            bars = base.mark_bar(cornerRadiusEnd=3).encode(
                 color=alt.Color("Series:N", scale=alt.Scale(domain=names_, range=[ORANGE, BLUE]),
                                 legend=alt.Legend(title=None, orient="top")),
                 tooltip=["Quarter:N", "Series:N", alt.Tooltip("value:Q", format="$,.1f", title="$B")])
+            labels = base.mark_text(baseline="bottom", dy=-3, fontSize=9, color=LABEL_INK).encode(
+                text=alt.Text("value:Q", format=",.0f"))
             show(name=f"capex_vs_{seg.lower().replace(' ', '_')}_revenue", data=g.drop(columns=["date"]),
-                 chart=axis_cfg(ch.properties(title=f"{g['Company'].iloc[0]}: capex vs {seg}", height=240)))
+                 chart=axis_cfg((bars + labels).properties(title=f"{g['Company'].iloc[0]}: capex vs {seg}", height=250)))
 
     # Annualized snapshot: the revenue AI demand produces vs what is being spent
     latest_rr = {}
