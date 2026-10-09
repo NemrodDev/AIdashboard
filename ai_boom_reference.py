@@ -71,6 +71,40 @@ CAPEX_GUIDANCE = [
 ]
 CAPEX_Q2_2026 = {"total_b": 172, "qoq_pct": 29, "yoy_pct": 77, "h1_b": 305, "source": PLATFORMONOMICS}
 
+# 2027 outlook. No hyperscaler has given a calendar-2027 capex number yet; what each said on
+# its Q2 2026 call, plus sell-side estimates. $B. None = no figure available.
+CITI_2027 = ("Citi estimates via BigGo Finance (Jul 16, 2026)",
+             "https://finance.biggo.com/news/a9ad937b-2486-448b-935f-09511f331f7a")
+ORACLE_FY27 = ("S&P / Oracle FY27 guidance, via PPC Land (Jul 2026)",
+               "https://ppc.land/s-p-cuts-oracle-to-bbb-as-ai-buildout-widens-cash-deficit-to-42bn/")
+MSFT_Q2 = ("The Star, 'Microsoft sees strong cash flow, lower capex' (Jul 31, 2026)",
+           "https://www.thestar.com.my/business/business-news/2026/07/31/microsoft-sees-strong-cash-flow-lower-capex")
+CAPEX_2027 = [
+    # company, 2026 guide midpoint (Jul), 2027 analyst estimate, 2027 company guidance, what the company said, source
+    ("Amazon", 220, 288, None,
+     "\"We will still not have enough capacity to meet all the demand we have in 2026 ... this dynamic "
+     "will also be true in 2027.\" No 2027 figure.", CITI_2027),
+    ("Alphabet", 200, 308, None,
+     "\"We continue to expect our CapEx to increase significantly in 2027\"; details later.", CITI_2027),
+    ("Meta", 137.5, 205, None,
+     "Plans \"geared towards maximizing 2026 and 2027 capacity\"; no 2027 guidance.", CITI_2027),
+    ("Microsoft", 175, None, None,
+     "FY27 (Jul 2026–Jun 2027) capex \"will grow year-over-year\"; ~$50B guided for Jul–Sep 2026; "
+     "expects to stay free-cash-flow positive. 2026 figure is after the lease reclassification (~$190B like-for-like).",
+     MSFT_Q2),
+    ("Oracle", None, None, 92.5,
+     "FY27 (Jun 2026–May 2027) capex guided at $90–95B.", ORACLE_FY27),
+]
+CAPEX_2027_TOTALS = [
+    # label, value, detail, source
+    ("Bloomberg consensus, 2027", "$1.08T", "Alphabet, Amazon, Meta, Microsoft and Oracle (as of Jul 31, 2026); "
+     "$777B in 2026.", ("Vanguard calculations on Bloomberg data, via ai-CIO", "https://www.ai-cio.com/?p=106712")),
+    ("Wall Street range, 2027", "$1.0–1.4T", "BofA, Moody's, Goldman above $1T; S&P >$1.3T; UBS ~$1.4T total AI capex.",
+     ("Stocktwits (Sep 22, 2026)",
+      "https://stocktwits.com/news-articles/markets/equity/jp-morgan-ceo-sees-hyperscaler-spending-hitting-1-trillion-next-year-and-still-growing-investors-are-shrugging-it-off-for-now/cZMPLi0RBeJ")),
+    ("Citi: Alphabet + Amazon + Meta, 2027", "$801B", "Estimates raised 12–22% in July.", CITI_2027),
+]
+
 FIRM_FACTS = [
     # label, value, detail, source (name, url)
     ("Big-4 2026 capex guidance", "$735–750B",
@@ -121,6 +155,30 @@ RATINGS = [
     ("Oracle", "BBB-", "—", 0, "Jul 9, 2026", "Cut from BBB, stable outlook; 5-yr CDS above 200bp",
      ("PPC Land", "https://ppc.land/s-p-cuts-oracle-to-bbb-as-ai-buildout-widens-cash-deficit-to-42bn/")),
 ]
+# 5-year CDS, bp. Public press readings only: dealer CDS quotes (Bloomberg, LSEG, S&P, ICE) are
+# not free, so the latest public figures are from late July to mid-August 2026. Replace with
+# current quotes from your terminal when you have them. None = no public figure found.
+CDS_5Y = {
+    # company: latest, latest label, as of, early-2026 baseline, baseline date, source(s)
+    "Oracle": (215, "215", "Jul 27, 2026", 144, "Start of 2026",
+               ("Edward Conard macro roundup / LSEG (Jul 28, 2026)",
+                "https://www.edwardconard.com/macro-roundup/big-tech-credit-risks-rise-sharply-as-ai-spending-soars/")),
+    "Meta": (90, "~90", "Jul 28, 2026", None, None,
+             ("KuCoin News, citing Bloomberg (Jul 28, 2026)",
+              "https://www.kucoin.com/news/flash/meta-and-broadcom-cds-hit-record-highs-amid-ai-financing-risks")),
+    "Alphabet": (67, "67", "Jul 28, 2026", 38, "Mid-Nov 2025",
+                 ("Yahoo Finance / GuruFocus, LSEG data (Jul 28, 2026)",
+                  "https://finance.yahoo.com/technology/ai/articles/big-tech-credit-risk-flashes-192645668.html")),
+    "Amazon": (67.5, "65–70", "Jul 28, 2026", 38, "Mid-Nov 2025",
+               ("KuCoin News, citing Bloomberg (Jul 28, 2026)",
+                "https://www.kucoin.com/news/flash/meta-and-broadcom-cds-hit-record-highs-amid-ai-financing-risks")),
+    "Microsoft": (None, "—", None, 34, "Mid-Nov 2025",
+                  ("ZeroHedge, citing S&P data (Nov 17, 2025)",
+                   "https://www.zerohedge.com/markets/stocks-slide-after-amazon-shocks-another-massive-bond-offering-rebound-news-boaz-weinsten")),
+}
+CDS_BASELINE_SOURCE = ("ZeroHedge, citing S&P data (Nov 17, 2025): Alphabet ~38, Amazon ~38, Microsoft ~34bp",
+                       "https://www.zerohedge.com/markets/stocks-slide-after-amazon-shocks-another-massive-bond-offering-rebound-news-boaz-weinsten")
+
 ORACLE_CDS = {"latest_bp": 203, "year_ago_bp": 40, "note": "Record high since 2008 (ICE Data Services)",
               "source": ("Thairath / ICE Data Services",
                          "https://en.thairath.co.th/money/tech_innovation/tech_companies/2947695")}
@@ -133,6 +191,26 @@ TOKEN_PRICE_GPT4 = [
     ("2024-05-13", 7.50, "GPT-4o"),
     ("2025-02-05", 0.18, "Gemini 2.0 Flash"),
 ]
+# Silicon Data LLM Token Expenditure Index (Bloomberg: SDLLMTK): usage-weighted blended price,
+# USD per 1M tokens, daily since Dec 2025. The full series is on Bloomberg / the Silicon Data
+# portal only; these are the dated readings reported publicly. Dates marked ~ are approximate.
+SILICON_DATA = ("Silicon Data, LLM Token Expenditure Index (SDLLMTK)",
+                "https://www.silicondata.com/products/silicon-index/llm-token-expenditure-index")
+SDLLMTK = [
+    # date, $ per 1M tokens, note, source
+    ("2025-12-15", 1.09, "~ Launch reading, Dec 2025",
+     ("sanj.dev, SDLLMTK explained (Aug 19, 2026)", "https://sanj.dev/post/sdllmtk-llm-token-expenditure-index/")),
+    ("2026-05-15", 2.12, "~ Peak, May 2026",
+     ("sanj.dev, SDLLMTK explained (Aug 19, 2026)", "https://sanj.dev/post/sdllmtk-llm-token-expenditure-index/")),
+    ("2026-07-03", 1.62, "CIO.com, Jul 3, 2026",
+     ("CIO.com, 'AI token prices are cooling' (Jul 3, 2026)", "https://www.cio.com/article/4192834/ai-token-prices-are-cooling-but-why-2.html")),
+    ("2026-08-19", 1.02, "Silicon Data dashboard, mid-Aug 2026",
+     ("sanj.dev, SDLLMTK explained (Aug 19, 2026)", "https://sanj.dev/post/sdllmtk-llm-token-expenditure-index/")),
+    ("2026-08-31", 0.97, "Record low since launch (CNBC)",
+     ("TechJack Solutions, citing CNBC (Sep 3, 2026)", "https://techjacksolutions.com/ai-brief/llm-token-prices-record-low-below-1-per-million-tokens/")),
+    ("2026-10-07", 0.99, "Silicon Data index page, Oct 7, 2026", SILICON_DATA),
+]
+
 BENCHLM = ("BenchLM LLM pricing statistics (Oct 7, 2026)", "https://benchlm.ai/md/stats/llm-pricing.md")
 TOKEN_INDEX = {"frontier": 16, "mid": 30.1, "budget": 61.2, "frontier_yoy_pct": 72, "mid_yoy_pct": -44.5,
                "median_input": 0.95, "median_output": 3.75, "base": "Mar 2023 = 100", "source": BENCHLM}

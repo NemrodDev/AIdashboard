@@ -874,7 +874,37 @@ def firm_page():
         st.caption("Alphabet, Amazon, Meta, Microsoft and Oracle. Share of US investment-grade supply: "
                    + ", ".join(f"{y} {s}%" for y, _, s in ref.HYPERSCALER_BONDS[-3:]) + ".")
 
-    sources_box(refs=[ref.PLATFORMONOMICS, ref.VANGUARD_BONDS] + [f[3] for f in ref.FIRM_FACTS],
+    # --- 2027 outlook ----------------------------------------------------------
+    st.subheader("2027 outlook")
+    st.caption("No hyperscaler has given a calendar-2027 capex number yet. Bars compare each company's latest "
+               "2026 guide with sell-side 2027 estimates; Oracle's bar is its own fiscal-2027 guidance "
+               "(Jun 2026–May 2027).")
+    c = st.columns(len(ref.CAPEX_2027_TOTALS))
+    for col, (label, value, detail, s) in zip(c, ref.CAPEX_2027_TOTALS):
+        tile(col, label, value, help=f"{detail} Source: {s[0]}")
+    groups = ["2026 guidance (Jul)", "2027 analyst estimate", "FY27 company guidance"]
+    rows = []
+    for co, g26, est27, guide27, _, _ in ref.CAPEX_2027:
+        for grp, v in zip(groups, [g26, est27, guide27]):
+            if v is not None:
+                rows.append((co, grp, v))
+    g27 = pd.DataFrame(rows, columns=["Company", "Basis", "Capex"])
+    l, r = st.columns([3, 2])
+    with l:
+        show(grouped_bars(g27, "Company", "Basis", "Capex", [g for g in groups if g in set(g27["Basis"])],
+                          [MA_COLOR, BLUE, ORANGE], fmt="$,.0f", x_title="$B",
+                          sort=[c[0] for c in ref.CAPEX_2027]))
+        est = [(co, g26, e) for co, g26, e, *_ in ref.CAPEX_2027 if g26 and e]
+        if est:
+            st.caption("Implied 2026→2027 growth: " + ", ".join(f"{co} {e / g - 1:+.0%}" for co, g, e in est)
+                       + ". Microsoft has no public 2027 estimate in this file.")
+    with r:
+        said = pd.DataFrame([(co, txt) for co, *_, txt, _ in ref.CAPEX_2027], columns=["Company", "What management said"])
+        st.dataframe(said, hide_index=True, column_config={
+            "What management said": st.column_config.TextColumn(width="large")})
+
+    sources_box(refs=[ref.PLATFORMONOMICS, ref.VANGUARD_BONDS] + [f[3] for f in ref.FIRM_FACTS]
+                + list(dict.fromkeys([c[5] for c in ref.CAPEX_2027] + [t[3] for t in ref.CAPEX_2027_TOTALS])),
                 notes=["Cash flows: " + ", ".join(f"{k} {v}" for k, v in src.items()) if src else "Cash flows: none loaded"])
 
 
@@ -951,8 +981,9 @@ def markets_page():
         chg = last_val(s) - s[s.index <= s.index[-1] - pd.Timedelta(days=90)].iloc[-1] if len(s) > 70 else float("nan")
         tile(col, f"{n}, {s.index[-1]:%b %d}", f"{last_val(s):.0f}bp", f"{chg:+.0f}bp vs 3 months ago",
              delta_color="inverse")
-    tile(c[3], "Oracle 5-yr CDS", f"{ref.ORACLE_CDS['latest_bp']}bp+",
-         f"vs ~{ref.ORACLE_CDS['year_ago_bp']}bp a year earlier", help=ref.ORACLE_CDS["note"])
+    o = ref.CDS_5Y["Oracle"]
+    tile(c[3], f"Oracle 5-yr CDS, {o[2]}", f"{o[1]}bp", f"{o[0] - o[3]:+.0f}bp since start of 2026",
+         delta_color="inverse", help=ref.ORACLE_CDS["note"])
     l, r = st.columns([3, 2])
     with l:
         show(line_chart(window(to_long(spreads)), fmt=",.0f", y_title="Basis points over Treasuries", height=320,
@@ -966,11 +997,28 @@ def markets_page():
         st.caption("Median spreads on Amazon, Alphabet, Meta and Oracle bonds, 2025 vs 2026 issues, and the "
                    "new-issue concession. 78 of 91 2026 bonds traded wider than at issue (Jul 28).")
 
-    st.markdown("**Credit ratings**")
-    rt = pd.DataFrame([r[:6] for r in ref.RATINGS], columns=["Company", "S&P", "Moody's", "Notches above junk",
-                                                            "As of", "Note"])
-    st.dataframe(rt.style.map(lambda v: f"color: {BAD}; font-weight: 700" if v == 0 else "",
-                              subset=["Notches above junk"]), hide_index=True)
+    st.markdown("**Credit ratings and 5-year CDS**")
+    rows = []
+    for co, sp, md, notch, asof, note, _ in ref.RATINGS:
+        latest, latest_lab, cds_date, base, base_date, _ = ref.CDS_5Y.get(co, (None, "—", None, None, None, None))
+        rows.append({"Company": co, "S&P": sp, "Moody's": md, "Notches above junk": notch,
+                     "5-yr CDS, bp": latest_lab, "CDS as of": cds_date or "—",
+                     "Early 2026, bp": base, "Baseline date": base_date or "—",
+                     "Change, bp": (latest - base) if latest is not None and base is not None else None,
+                     "Rating as of": asof, "Note": note})
+    rt = pd.DataFrame(rows)
+
+    def widen_red(v):
+        if not isinstance(v, (int, float)) or pd.isna(v) or v == 0:
+            return ""
+        return f"color: {BAD if v > 0 else GOOD}; font-weight: 600"
+    st.dataframe(rt.style.format({"Early 2026, bp": "{:.0f}", "Change, bp": "{:+.0f}"}, na_rep="—")
+                 .map(lambda v: f"color: {BAD}; font-weight: 700" if v == 0 else "", subset=["Notches above junk"])
+                 .map(widen_red, subset=["Change, bp"]), hide_index=True)
+    st.caption("CDS = cost per year to insure $10M of debt, in basis points (red = wider since the baseline). "
+               "Dealer CDS quotes aren't free: these are the latest levels reported in the press (late July 2026), "
+               "and Alphabet, Amazon and Microsoft baselines are mid-Nov 2025 readings, the closest public figures "
+               "to the start of 2026. Paste current quotes into CDS_5Y in ai_boom_reference.py to update.")
 
     st.subheader("Token prices")
     ti = ref.TOKEN_INDEX
@@ -980,6 +1028,28 @@ def markets_page():
     tile(c[1], "Mid-tier token price index", f"{ti['mid']}", f"{ti['mid_yoy_pct']:+.1f}% YoY")
     tile(c[2], "Median API price, per 1M tokens", f"${ti['median_input']:.2f} in", f"${ti['median_output']:.2f} out")
     tile(c[3], "Price fall at fixed capability", "~40× per year", "range 9× to 900× (Epoch AI)")
+    st.markdown("**Silicon Data LLM Token Expenditure Index (SDLLMTK)**")
+    sd = pd.DataFrame([(d, v, n) for d, v, n, _ in ref.SDLLMTK], columns=["date", "value", "note"])
+    sd["date"] = pd.to_datetime(sd["date"])
+    peak = sd.loc[sd["value"].idxmax()]
+    c = st.columns(3)
+    tile(c[0], f"SDLLMTK, {sd['date'].iloc[-1]:%b %d, %Y}", f"${sd['value'].iloc[-1]:.2f}",
+         f"{sd['value'].iloc[-1] / peak['value'] - 1:+.0%} vs {peak['date']:%b} peak", delta_color="inverse",
+         help="Usage-weighted blended price per 1M tokens across 20+ actively used models.")
+    tile(c[1], f"Peak, {peak['date']:%b %Y}", f"${peak['value']:.2f}")
+    tile(c[2], "Since launch (Dec 2025)", f"{sd['value'].iloc[-1] / sd['value'].iloc[0] - 1:+.0%}")
+    sd_line = alt.Chart(sd).mark_line(color=BLUE, strokeWidth=2, point=alt.OverlayMarkDef(color=BLUE, size=60)).encode(
+        x=time_axis(sd), y=alt.Y("value:Q", title="$ per 1M tokens", scale=alt.Scale(zero=True)),
+        tooltip=[alt.Tooltip("date:T", format="%b %d, %Y", title="Date"),
+                 alt.Tooltip("value:Q", format="$.2f", title="SDLLMTK"), alt.Tooltip("note:N", title="Reading")])
+    sd_lab = alt.Chart(sd).mark_text(dy=-12, fontSize=11, fontWeight="bold", color=LABEL_INK).encode(
+        x="date:T", y="value:Q", text=alt.Text("value:Q", format="$.2f"))
+    show(axis_cfg((sd_line + sd_lab).properties(height=260)))
+    st.caption("Points are the dated readings reported publicly (the daily series is on Bloomberg and the Silicon "
+               "Data portal); lines connect them, so they don't show day-to-day moves. Because the index is "
+               "expenditure-weighted, it also falls when usage shifts to cheaper models.")
+
+    st.markdown("**Price of a fixed capability**")
     tp = pd.DataFrame(ref.TOKEN_PRICE_GPT4, columns=["date", "value", "model"])
     tp["date"] = pd.to_datetime(tp["date"])
     ch = alt.Chart(tp).mark_line(color=BLUE, strokeWidth=2, point=alt.OverlayMarkDef(color=BLUE, size=60)).encode(
@@ -990,7 +1060,9 @@ def markets_page():
     show(axis_cfg((ch + lab).properties(height=280, padding={"right": 90})))
     st.caption("Cheapest model matching GPT-4 on MMLU. Flagship prices have risen over the past year even as the "
                "price of a fixed capability collapsed.")
-    sources_box(tuple(CREDIT), refs=[ref.REUTERS_SPREADS, ref.ORACLE_CDS["source"], ref.EPOCH, ref.BENCHLM]
+    sources_box(tuple(CREDIT), refs=[ref.REUTERS_SPREADS, ref.ORACLE_CDS["source"], ref.CDS_BASELINE_SOURCE]
+                + list(dict.fromkeys(v[5] for v in ref.CDS_5Y.values()))
+                + list(dict.fromkeys(x[3] for x in ref.SDLLMTK)) + [ref.EPOCH, ref.BENCHLM]
                 + list(dict.fromkeys(r[6] for r in ref.RATINGS)),
                 notes=["Prices: " + ", ".join(f"{k} {v}" for k, v in psrc.items())] if not px.empty else [])
 
