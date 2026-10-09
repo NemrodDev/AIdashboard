@@ -76,6 +76,21 @@ TRADE_NOMINAL = {
     "GDP": "Nominal GDP",
 }
 GDP_GROWTH = {"A191RL1Q225SBEA": "Real GDP growth"}
+# Real nonresidential fixed investment and its three parts: BEA chain-type quantity indexes (2017=100,
+# back to 1947; FRED's chained-dollar levels only start in 2007) and nominal levels for spending shares
+NONRES_QTY = {
+    "A008RA3Q086SBEA": "Nonresidential fixed investment",
+    "B009RA3Q086SBEA": "Structures",
+    "Y033RA3Q086SBEA": "Equipment",
+    "Y001RA3Q086SBEA": "Intellectual property products",
+}
+NONRES_NOM = {
+    "B009RC1Q027SBEA": "Structures (nominal)",
+    "Y033RC1Q027SBEA": "Equipment (nominal)",
+    "Y001RC1Q027SBEA": "Intellectual property products (nominal)",
+}
+NONRES_IDS = tuple([*NONRES_QTY, *NONRES_NOM])
+RESIDUAL = "Chain-weighting residual"
 MONTHLY_REAL = {
     "PRPWRCONS": "Private power construction",            # Census C30, $M SAAR
     "IPG3344S": "Industrial production: semiconductors",  # Fed G.17, 2017=100
@@ -99,7 +114,8 @@ LABOR = {
 }
 SERIES_NAMES = {**NIPA_NOMINAL, **{k: v + " (real growth)" for k, v in NIPA_REAL_GROWTH.items()},
                 **{k: v + " (contribution)" for k, v in NIPA_CONTRIB.items()}, **NIPA_REAL_LEVELS,
-                **TRADE_NOMINAL, **GDP_GROWTH, **MONTHLY_REAL, **PRODUCTIVITY, **CREDIT, **LABOR}
+                **TRADE_NOMINAL, **GDP_GROWTH, **MONTHLY_REAL, **PRODUCTIVITY, **CREDIT, **LABOR,
+                **{k: v + " (real index)" for k, v in NONRES_QTY.items()}, **NONRES_NOM}
 
 # The AI trade by segment (edit freely: each segment becomes an equal-weight basket)
 AI_SEGMENTS = {
@@ -424,6 +440,26 @@ def yoy_buildout_proxy(df: pd.DataFrame, dc: pd.DataFrame, trade_weight: float) 
     return out
 
 
+def nonres_breakdown(df: pd.DataFrame, measure: str) -> tuple:
+    """Real growth of nonresidential fixed investment and of structures, equipment and IPP, plus each
+    part's contribution to the total's growth (pp):
+        contribution = part's share of nominal nonresidential spending in the base period x its real growth
+    The residual makes the parts add up exactly to BEA's total (chain weighting isn't exactly additive)."""
+    q = {name: ser(df, sid) for sid, name in NONRES_QTY.items()}
+    nom = pd.DataFrame({name.replace(" (nominal)", ""): ser(df, sid) for sid, name in NONRES_NOM.items()})
+    lag = 4 if measure.startswith("Year") else 1
+    if measure.startswith("Year"):
+        growth = {k: (v / v.shift(4) - 1) * 100 for k, v in q.items()}
+    else:
+        growth = {k: ((v / v.shift(1)) ** 4 - 1) * 100 for k, v in q.items()}
+    shares = nom.div(nom.sum(axis=1), axis=0).shift(lag)
+    parts = pd.DataFrame({k: shares[k] * growth[k] for k in nom.columns})
+    total = growth["Nonresidential fixed investment"]
+    parts[RESIDUAL] = total - parts.sum(axis=1, min_count=3)
+    parts.index.name = "date"
+    return growth, parts.dropna(how="all"), total
+
+
 def yoy(s: pd.Series, periods: int) -> pd.Series:
     return s.pct_change(periods, fill_method=None) * 100
 
@@ -518,7 +554,7 @@ def bar_time(d: pd.DataFrame, fmt="+,.1f", y_title=None, height=260, color=None,
 
 
 def stacked_contrib(parts: pd.DataFrame, total: pd.Series = None, total_name="Total", fmt="+.2f",
-                    height=360, date_fmt="%Y Q%q"):
+                    height=360, date_fmt="%Y Q%q", net_name="Net, pp", y_title="Percentage points"):
     """Stacked bars for components (positive and negative stack separately), a black net line
     across components and optional dots for a total (e.g. real GDP growth)."""
     long = parts.reset_index().melt(id_vars="date", var_name="Component", value_name="value").dropna()
@@ -528,17 +564,22 @@ def stacked_contrib(parts: pd.DataFrame, total: pd.Series = None, total_name="To
     colors = CATEGORICAL[: len(comps)]
     if "Net imports of computers & parts" in comps:
         colors[comps.index("Net imports of computers & parts")] = BAD
+    if RESIDUAL in comps:
+        colors[comps.index(RESIDUAL)] = "#c9c7c0"
+    n = parts.index.nunique()
+    bar_size = max(1.5, min(14.0, 760 / max(n, 1)))
     color = alt.Color("Component:N", scale=alt.Scale(domain=comps, range=colors), sort=comps,
                       legend=alt.Legend(title=None, orient="top", columns=3, labelLimit=320))
-    bars = alt.Chart(long).mark_bar(opacity=0.9, size=14).encode(
-        x=time_axis(long), y=alt.Y("sum(value):Q", stack="zero", title="Percentage points"),
+    bars = alt.Chart(long).mark_bar(opacity=0.9, size=bar_size).encode(
+        x=time_axis(long), y=alt.Y("sum(value):Q", stack="zero", title=y_title),
         color=color, order=alt.Order("Component:N"),
         tooltip=[alt.Tooltip("date:T", format=date_fmt, title="Quarter"), "Component:N",
                  alt.Tooltip("value:Q", format=fmt, title="pp")])
     net = parts.sum(axis=1, min_count=1).rename("value").reset_index()
-    net_line = alt.Chart(net).mark_line(color="#3b3a37", strokeWidth=2, point=alt.OverlayMarkDef(
-        color="#3b3a37", size=30)).encode(x="date:T", y="value:Q", tooltip=[
-            alt.Tooltip("date:T", format=date_fmt, title="Quarter"), alt.Tooltip("value:Q", format=fmt, title="Net, pp")])
+    net_line = alt.Chart(net).mark_line(color="#3b3a37", strokeWidth=2 if n <= 60 else 1.5,
+                                        point=alt.OverlayMarkDef(color="#3b3a37", size=30) if n <= 60 else False
+                                        ).encode(x="date:T", y="value:Q", tooltip=[
+            alt.Tooltip("date:T", format=date_fmt, title="Quarter"), alt.Tooltip("value:Q", format=fmt, title=net_name)])
     layers = [alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color=LABEL_INK).encode(y="y:Q"), bars, net_line]
     if total is not None:
         t = total.rename("value").reset_index()
@@ -780,6 +821,52 @@ def real_economy_page():
     tile(c[5], f"Semiconductor output, {ip.index[-1]:%b %Y}", f"{last_val(ip):.1f}",
          f"{last_val(yoy(ip, 12)):+.1f}% YoY", help="Industrial production, NAICS 3344, 2017=100.")
 
+    # --- Real nonresidential fixed investment, since 1990 -----------------------
+    st.subheader("Business investment since 1990: structures, equipment and intellectual property")
+    st.caption("Real private nonresidential fixed investment (BEA, inflation-adjusted) and its three parts. "
+               "AI spending sits mostly in equipment (servers, chips, networking) and intellectual property "
+               "(software, R&D); data center buildings are in structures.")
+    nr = fred_or_stop(NONRES_IDS, "1988-01-01")
+    a, b, c3 = st.columns([2, 2, 3])
+    with a:
+        nr_view = st.segmented_control("View", ["Lines", "Stacked contributions"], default="Lines",
+                                       key="re_nr_view", label_visibility="collapsed") or "Lines"
+    with b:
+        opts = ["Year over year %", "Quarterly, annualized %"] + (["Index, 2017 = 100"] if nr_view == "Lines" else [])
+        nr_measure = st.segmented_control("Measure", opts, default="Year over year %", key=f"re_nr_measure_{nr_view}",
+                                          label_visibility="collapsed") or "Year over year %"
+    with c3:
+        nr_from = st.slider("From", 1990, date.today().year - 1, 1990, key="re_nr_from")
+    cutoff = pd.Timestamp(f"{nr_from}-01-01")
+    if nr_view == "Lines":
+        if nr_measure.startswith("Index"):
+            m = {name: ser(nr, sid) for sid, name in NONRES_QTY.items()}
+            fmt, yt = ",.0f", "Real index, 2017 = 100"
+        else:
+            m, _, _ = nonres_breakdown(nr, nr_measure)
+            fmt, yt = "+.1f", ("% change from a year earlier" if nr_measure.startswith("Year")
+                               else "% change at annual rate")
+        long = to_long(m)
+        show(name="nonres_investment_lines", chart=line_chart(long[long["date"] >= cutoff], fmt=fmt, y_title=yt,
+             height=360, zero=not nr_measure.startswith("Index"), colors=["#3b3a37", ORANGE, BLUE, "#1baf7a"],
+             date_fmt="%Y Q%q"))
+    else:
+        _, parts, total = nonres_breakdown(nr, nr_measure)
+        parts = parts[parts.index >= cutoff]
+        show(name="nonres_investment_contributions", chart=stacked_contrib(
+            parts, net_name="Nonresidential growth, %",
+            y_title="Contribution to growth, pp" + (" (year over year)" if nr_measure.startswith("Year") else " (annualized)"),
+            height=380))
+        st.caption("Bars = each part's contribution to the growth of real nonresidential investment (its share of "
+                   "spending × its real growth); they stack to the black line, total nonresidential growth. The grey "
+                   "residual is the small gap left by chain weighting.")
+        if not parts.empty:
+            last = parts.dropna(how="all").index.max()
+            cols = st.columns(4)
+            tile(cols[0], f"Nonresidential growth, {qlabel(last)}", f"{total.get(last, float('nan')):+.1f}%")
+            for col, k in zip(cols[1:], ["Structures", "Equipment", "Intellectual property products"]):
+                tile(col, k, f"{parts.loc[last, k]:+.2f}pp")
+
     # --- Investment lines ----------------------------------------------------
     st.subheader("How much are businesses spending on AI-related investment?")
     st.caption("Business investment from the official GDP accounts (BEA) in the categories where AI spending "
@@ -897,7 +984,7 @@ def real_economy_page():
     st.download_button("Download real-economy series (CSV)",
                        raw.pivot_table(index="date", columns="name", values="value").reset_index().to_csv(index=False).encode(),
                        file_name=f"ai_boom_real_economy_{date.today():%Y_%m_%d}.csv", mime="text/csv")
-    sources_box(REAL_ECON_IDS, refs=[ref.DC_SOURCE, ref.DC_NOMINAL_LATEST["source"], fed["source"]], notes=[
+    sources_box(REAL_ECON_IDS + NONRES_IDS, refs=[ref.DC_SOURCE, ref.DC_NOMINAL_LATEST["source"], fed["source"]], notes=[
         f"Fed figure data (gross vs net series): {fed['data_file']}",
         "Gross output and value added by industry (NAICS 3344, software publishing, data processing & hosting, "
         "computer systems design, scientific R&D) are in BEA's GDP-by-industry tables (apps.bea.gov), not on FRED.",
