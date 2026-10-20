@@ -142,6 +142,71 @@ HYPERSCALER_SPREADS = [
     ("2–4 yr", 30, 40), ("5–7 yr", 50, 60), ("20+ yr", 108.5, 118), ("New-issue concession", 2.25, 12),
 ]
 
+# ---------------------------------------------------------------------------
+# AI-related bonds and loans, bond by bond. Market yields/prices are the latest published readings
+# (no free daily bond-price feed exists; TRACE prices need a FINRA or vendor subscription). The dashboard
+# computes each bond's spread over Treasuries from FRED's Treasury curve on the same date.
+# Fields: issuer, group, instrument, rate (as text), rate type, coupon %, maturity (ISO), maturity label,
+#         amount, secured?, price (per 100), yield to maturity %, price/yield as of (ISO), source
+# ---------------------------------------------------------------------------
+TV_BONDS = ("Benzinga / TradingView bond screener (prices as of Oct 5, 2026)",
+            "https://www.tradingview.com/news/benzinga:7522ce132094b:0-highest-yielding-hyperscaler-bonds-in-october-2026-spacex-joins-oracle-above-7-5/")
+BZ_ORCL = ("Benzinga, 'Oracle 20-year bond yields 8.1%' (Oct 2, 2026)",
+           "https://www.benzinga.com/markets/bonds/26/10/62136978/oracle-20-year-bond-yields-8-percent-stock-return")
+CNBC_CRWV = ("CNBC via Traders Union (Oct 19, 2026)",
+             "https://tradersunion.com/news/companies/show/3882979-coreweave-bond-yields-credit-risk/")
+CCIR = ("CCIR, CoreWeave's debt entity by entity (as of Oct 18, 2026; from SEC filings)",
+        "https://ccir.io/research/coreweave-debt-by-entity")
+CCIR_LEDGER = ("CCIR Compute Credit Tracker (as of Oct 19, 2026; from SEC filings and lender releases)", "https://ccir.io/credit")
+ST_NEB = ("StockTitan, 'How much CoreWeave and Nebius owe' (Oct 15, 2026)",
+          "https://www.stocktitan.net/articles/coreweave-nebius-ai-cloud-debt-when-it-comes-due")
+CP_NEO = ("The Closing Print, neocloud credit deep dive (Oct 14, 2026)",
+          "https://www.theclosingprint.net/2026/10/neoclouds-ai-hosting-deep-dive-2026-10-14/")
+TP_BEIGNET = ("TokenPost: Hyperion project bond at record low (Oct 7, 2026)", "https://www.tokenpost.com/news/technology/27470")
+AI_BONDS = [
+    # --- hyperscalers: market yields
+    ("Oracle", "Hyperscalers", "6.85% notes", "6.85% fixed", "Fixed", 6.85, "2066-02-04", "Feb 2066", None, False, 81.70, 8.45, "2026-10-05", TV_BONDS),
+    ("Oracle", "Hyperscalers", "6.125% notes", "6.125% fixed", "Fixed", 6.125, "2065-08-03", "Aug 2065", None, False, 73.69, 8.43, "2026-10-05", TV_BONDS),
+    ("Oracle", "Hyperscalers", "6.55% notes", "6.55% fixed", "Fixed", 6.55, "2046-02-15", "Feb 2046", None, False, 84.91, 8.11, "2026-10-01", BZ_ORCL),
+    ("Meta", "Hyperscalers", "5.55% notes", "5.55% fixed", "Fixed", 5.55, "2064-08-15", "Aug 2064", None, False, 75.80, 7.48, "2026-10-05", TV_BONDS),
+    ("Meta", "Hyperscalers", "5.75% notes", "5.75% fixed", "Fixed", 5.75, "2065-11-15", "Nov 2065", None, False, 78.30, 7.46, "2026-10-05", TV_BONDS),
+    ("Amazon", "Hyperscalers", "6.05% notes", "6.05% fixed", "Fixed", 6.05, "2076-03-13", "Mar 2076", None, False, 87.50, 6.95, "2026-10-05", TV_BONDS),
+    ("Amazon", "Hyperscalers", "6.25% notes", "6.25% fixed", "Fixed", 6.25, "2066-07-09", "Jul 2066", None, False, 90.80, 6.93, "2026-10-05", TV_BONDS),
+    ("Alphabet", "Hyperscalers", "5.70% notes", "5.70% fixed", "Fixed", 5.70, "2075-11-15", "Nov 2075", None, False, 83.90, 6.84, "2026-10-05", TV_BONDS),
+    ("Alphabet", "Hyperscalers", "6.50% notes", "6.50% fixed", "Fixed", 6.50, "2066-08-15", "Aug 2066", None, False, 95.70, 6.81, "2026-10-05", TV_BONDS),
+    ("Microsoft", "Hyperscalers", "2.675% notes", "2.675% fixed", "Fixed", 2.675, "2060-06-01", "Jun 2060", None, False, 49.00, 6.36, "2026-10-05", TV_BONDS),
+    ("Microsoft", "Hyperscalers", "3.041% notes", "3.041% fixed", "Fixed", 3.041, "2062-03-17", "Mar 2062", None, False, 53.60, 6.34, "2026-10-05", TV_BONDS),
+    ("Meta (Hyperion JV)", "Hyperscalers", "Beignet Investor 6.58% secured amortizing bond", "6.58% fixed, amortizing", "Fixed", 6.58, "2049-05-30", "2049", "$27.3B", True, 91.0, None, "2026-10-07", TP_BEIGNET),
+    # --- other AI borrowers with market yields
+    ("SpaceX (incl. AI unit)", "Neoclouds & AI", "6.60% notes", "6.60% fixed", "Fixed", 6.60, "2046-07-15", "Jul 2046", None, False, 87.60, 7.84, "2026-10-05", TV_BONDS),
+    ("SpaceX (incl. AI unit)", "Neoclouds & AI", "6.65% notes", "6.65% fixed", "Fixed", 6.65, "2056-07-15", "Jul 2056", None, False, 88.03, 7.67, "2026-10-05", TV_BONDS),
+    # --- neoclouds
+    ("CoreWeave", "Neoclouds & AI", "9.625% senior notes", "9.625% fixed", "Fixed", 9.625, "2032-06-01", "2032", "$1.25B", False, None, 14.9, "2026-10-19", CNBC_CRWV),
+    ("CoreWeave", "Neoclouds & AI", "9.25% senior notes", "9.25% fixed", "Fixed", 9.25, "2030-06-01", "2030", "$2.00B", False, None, None, None, CCIR),
+    ("CoreWeave", "Neoclouds & AI", "9.00% senior notes", "9.00% fixed", "Fixed", 9.00, "2031-06-01", "2031", "$1.75B", False, None, None, None, CCIR),
+    ("CoreWeave", "Neoclouds & AI", "9.75% senior notes", "9.75% fixed", "Fixed", 9.75, "2031-06-01", "2031", "$2.75B", False, None, None, None, CCIR),
+    ("CoreWeave", "Neoclouds & AI", "8.50% EUR senior notes", "8.50% fixed (EUR)", "Fixed", 8.50, "2032-06-01", "2032", "€2.0B", False, None, None, None, CCIR),
+    ("CoreWeave", "Neoclouds & AI", "Delayed-draw term loan 1.0", "SOFR + 9.62%", "Floating", None, "2028-03-28", "Mar 2028", "$1.30B", True, None, None, None, CCIR),
+    ("CoreWeave", "Neoclouds & AI", "Delayed-draw term loan 2.0", "SOFR + 6.00–13.00% by customer", "Floating", None, "2030-08-01", "Aug 2030", "$3.19B", True, None, None, None, CCIR),
+    ("CoreWeave", "Neoclouds & AI", "Delayed-draw term loan 2.1", "SOFR + 4.25%", "Floating", None, "2031-03-01", "Mar 2031", "$3.00B", True, None, None, None, CCIR),
+    ("CoreWeave", "Neoclouds & AI", "Delayed-draw term loan 3.0", "SOFR + 4.00%", "Floating", None, "2030-08-21", "Aug 2030", "$2.21B", True, None, None, None, CCIR),
+    ("CoreWeave", "Neoclouds & AI", "Delayed-draw term loan 4.0 (rated A3)", "SOFR + 2.25% (fixed tranche ~5.9%)", "Floating", None, "2032-03-31", "Mar 2032", "$2.84B", True, None, None, None, CCIR),
+    ("CoreWeave", "Neoclouds & AI", "Delayed-draw term loan 5.0 (rated Ba2/BB+)", "SOFR + 4.50%", "Floating", None, "2031-11-15", "Nov 2031", "$1.10B", True, None, None, None, CCIR),
+    ("CoreWeave", "Neoclouds & AI", "Delayed-draw term loan 5.5 (rated Ba2/BB+)", "SOFR + 5.50%", "Floating", None, "2031-09-01", "Sep 2031", "$2.6B signed", True, None, None, None, CCIR),
+    ("CoreWeave", "Neoclouds & AI", "Revolving credit facility", "SOFR + 1.75%", "Floating", None, "2029-11-01", "Nov 2029", "$2.5B ($1.2B drawn Aug)", True, None, None, None, CCIR),
+    ("CoreWeave", "Neoclouds & AI", "1.75% convertible notes", "1.75% fixed, convertible", "Convertible", 1.75, "2031-06-01", "2031", "$2.59B", False, None, None, None, CCIR),
+    ("CoreWeave", "Neoclouds & AI", "1.75% convertible notes", "1.75% fixed, convertible", "Convertible", 1.75, "2032-06-01", "2032", "$4.00B", False, None, None, None, CCIR),
+    ("CoreWeave", "Neoclouds & AI", "2.875% convertible notes", "2.875% fixed, convertible", "Convertible", 2.875, "2033-04-01", "Apr 2033", "$4.20B", False, None, None, None, CCIR),
+    ("Nebius", "Neoclouds & AI", "Senior secured GPU facility", "SOFR + 2.50%", "Floating", None, "2030-10-31", "Oct 2030", "~$775M", True, None, None, None, ST_NEB),
+    ("Nebius", "Neoclouds & AI", "0.50% convertible notes", "0.50% fixed, convertible (repay 110%)", "Convertible", 0.50, "2030-02-01", "Feb 2030", "part of $5.75B", False, None, None, None, ST_NEB),
+    ("Nebius", "Neoclouds & AI", "4.50% convertible notes", "4.50% fixed, convertible (repay 125%)", "Convertible", 4.50, "2034-02-01", "Feb 2034", "part of $5.75B", False, None, None, None, ST_NEB),
+    ("IREN", "Neoclouds & AI", "Hardware 3 senior secured notes (rated A)", "5.96% fixed", "Fixed", 5.96, "2031-12-31", "Dec 2031", "$2.10B", True, None, None, None, CCIR_LEDGER),
+    ("IREN", "Neoclouds & AI", "Hardware 3 delayed-draw term loan", "SOFR + 2.25%", "Floating", None, "2031-12-31", "Dec 2031", "$1.55B", True, None, None, None, CCIR_LEDGER),
+    ("Nscale", "Neoclouds & AI", "GPU-backed delayed-draw term loan", "SOFR + 5.00%", "Floating", None, "2032-09-30", "Sep 2032", "$1.42B", True, None, None, None, CCIR_LEDGER),
+    ("Galaxy Digital", "Neoclouds & AI", "Helios Phase II senior secured notes", "9.875% fixed", "Fixed", 9.875, "2031-06-01", "2031", "$3.51B", True, None, None, None, CP_NEO),
+    ("Applied Digital", "Neoclouds & AI", "ELN-04 secured notes", "7.00% fixed", "Fixed", 7.00, None, "—", "$1.59B", True, None, None, None, CP_NEO),
+]
+
 # Long-term issuer / senior unsecured ratings as reported. Notches above junk are computed in the
 # dashboard from the S&P rating (Moody's if S&P is missing): BBB-/Baa3 = 0, junk is negative.
 MB = ("MarketBeat, 'Oracle is one step from junk'", "https://www.marketbeat.com/articles/oracle-is-one-step-from-junkcan-it-afford-the-ai-boom/")
@@ -192,10 +257,16 @@ RATING_SEGMENTS = ["Hyperscalers", "Chips", "Neoclouds & AI", "Servers & data ce
 # not free, so the latest public figures are from late July to mid-August 2026. Replace with
 # current quotes from your terminal when you have them. None = no public figure found.
 CDS_5Y = {
-    # company: latest, latest label, as of, early-2026 baseline, baseline date, source(s)
-    "Oracle": (215, "215", "Jul 27, 2026", 144, "Start of 2026",
-               ("Edward Conard macro roundup / LSEG (Jul 28, 2026)",
-                "https://www.edwardconard.com/macro-roundup/big-tech-credit-risks-rise-sharply-as-ai-spending-soars/")),
+    # company: latest, latest label, as of, early-2026 baseline, baseline date, source
+    # Updated Oct 20, 2026 from the latest press readings. Big Tech CDS hit record highs on Oct 15 (Reuters,
+    # citing LSEG and S&P Global Market Intelligence), but levels for Amazon, Alphabet, Meta and Nvidia
+    # weren't published; their figures below are still the late-July readings (see CDS_NOTES).
+    "Oracle": (315, "315", "Oct 19, 2026", 144, "Start of 2026",
+               ("CNBC via Traders Union (Oct 19, 2026): Oracle 5-yr CDS 315bp, up 311% YoY",
+                "https://tradersunion.com/news/companies/show/3882979-coreweave-bond-yields-credit-risk/")),
+    "CoreWeave": (1082, "~1,082", "Oct 19, 2026", None, None,
+                  ("CNBC via Traders Union (Oct 19, 2026): ~1,082bp; record above 1,100bp on Oct 15 (S&P Global MI)",
+                   "https://tradersunion.com/news/companies/show/3882979-coreweave-bond-yields-credit-risk/")),
     "Meta": (90, "~90", "Jul 28, 2026", None, None,
              ("KuCoin News, citing Bloomberg (Jul 28, 2026)",
               "https://www.kucoin.com/news/flash/meta-and-broadcom-cds-hit-record-highs-amid-ai-financing-risks")),
@@ -207,16 +278,25 @@ CDS_5Y = {
                 "https://www.kucoin.com/news/flash/meta-and-broadcom-cds-hit-record-highs-amid-ai-financing-risks")),
     "Nvidia": (82, "82", "Jul 27, 2026", None, None,
                ("Protos, citing CDS data (Jul 29, 2026)", "https://protos.com/credit-default-swaps-forecast-ai-bankruptcies/")),
-    "CoreWeave": (855, "855+", "Jul 28, 2026", None, None,
-                  ("Protos, citing CDS data (Jul 29, 2026)", "https://protos.com/credit-default-swaps-forecast-ai-bankruptcies/")),
     "Microsoft": (None, "—", None, 34, "Mid-Nov 2025",
                   ("ZeroHedge, citing S&P data (Nov 17, 2025)",
                    "https://www.zerohedge.com/markets/stocks-slide-after-amazon-shocks-another-massive-bond-offering-rebound-news-boaz-weinsten")),
 }
+CDS_OCT15 = ("Reuters via Investing.com (Oct 15, 2026): Oracle near 300bp, CoreWeave >1,100bp; Amazon, Alphabet, "
+             "Meta at record highs (LSEG, S&P Global MI)",
+             "https://www.investing.com/news/stock-market-news/ai-credit-default-swap-spreads-widen-sharply-4950549")
+CDS_NOTES = {
+    "Oracle": "Record 288bp on Oct 15 (S&P Global MI / LSEG), 315bp on Oct 19",
+    "CoreWeave": "Record >1,100bp on Oct 15; above 1,000bp is distress territory",
+    "Meta": "Record high on Oct 15 (Reuters); level not published since July",
+    "Alphabet": "Record high on Oct 15 (Reuters); level not published since July",
+    "Amazon": "Record high on Oct 15 (Reuters); level not published since July",
+    "Nvidia": "Rose sharply on Oct 15 (Reuters); level not published since July",
+}
 CDS_BASELINE_SOURCE = ("ZeroHedge, citing S&P data (Nov 17, 2025): Alphabet ~38, Amazon ~38, Microsoft ~34bp",
                        "https://www.zerohedge.com/markets/stocks-slide-after-amazon-shocks-another-massive-bond-offering-rebound-news-boaz-weinsten")
 
-ORACLE_CDS = {"latest_bp": 203, "year_ago_bp": 40, "note": "Record high since 2008 (ICE Data Services)",
+ORACLE_CDS = {"latest_bp": 315, "year_ago_bp": 77, "note": "315bp on Oct 19, 2026, up 311% from a year earlier; record 288bp close on Oct 15 (S&P Global MI / LSEG)",
               "source": ("Thairath / ICE Data Services",
                          "https://en.thairath.co.th/money/tech_innovation/tech_companies/2947695")}
 
@@ -367,3 +447,90 @@ AI_DISCLOSURES = [
      ("Yahoo Finance: hyperscalers' Q1 2026", "https://finance.yahoo.com/sectors/technology/articles/hyperscalers-hit-700-billion-2026-111243744.html")),
 ]
 CLOUD_BACKLOG = [("Google Cloud", "Q1 2026", 460), ("Google Cloud", "Q2 2026", 514)]
+
+
+# ---------------------------------------------------------------------------
+# Compute rental prices ($ per GPU-hour, on-demand). Compiled Oct 18, 2026.
+# Ornn's B200 / H200 / H100 / A100 history also loads live from its public API
+# (trailing 3 months, no key); the figures here are the fallback and the
+# longer history the free API doesn't cover.
+# ---------------------------------------------------------------------------
+COMPUTE_AS_OF = "Oct 17, 2026"
+SILICON_INDEX = ("Silicon Data, Silicon Index GPU rental price indices",
+                 "https://www.silicondata.com/products/silicon-index?gpu=h100")
+SILICON_B300 = ("Silicon Data, B300 Rental Price Index", "https://www.silicondata.com/products/silicon-index/b300")
+ORNN = ("Ornn Compute Price Index (OCPI)", "https://data.ornn.com/markets")
+ORNN_B200 = ("Ornn OCPI-B200", "https://data.ornn.com/markets/b200")
+ORNN_H200 = ("Ornn OCPI-H200", "https://data.ornn.com/markets/h200")
+TUNGUZ = ("Tomasz Tunguz, 'GPU Spot Prices Surge 114% in Six Weeks' (Apr 2026), citing Ornn",
+          "https://www.tomtunguz.com/b200-gpu-pricing-spot-market-model-releases/")
+COMPUTE_DESK = ("Compute Desk DESKB300 index (Bloomberg), chart shared by @matthew_sigel", "https://compute-desk.com/")
+CRYPTOBRIEFING = ("Crypto Briefing, 'Blackwell Ultra GPU rental prices climb 17 straight days to a record high'",
+                  "https://cryptobriefing.com/blackwell-ultra-gpu-rental-prices-record-high/")
+
+# Latest readings, Oct 17, 2026. Silicon Data: standardized blend of neocloud (and, where published,
+# hyperscaler) rentals. Ornn: daily settle. None = not published.
+GPU_RENTAL_LATEST = [
+    # chip, generation, launched, SD neocloud, SD 7-day %, SD hyperscaler, Ornn, note
+    ("B300", "Blackwell Ultra", 2025, 7.01, 0.9, None, None,
+     "Compute Desk index hit a record 7.45 on Oct 14 after 17 straight daily gains"),
+    ("B200", "Blackwell", 2024, 6.12, 7.0, None, 8.48, "Ornn up 12.6% in a week, 19.4% in a month"),
+    ("H200", "Hopper", 2024, 3.51, 6.0, None, 6.39, "Ornn up 23.8% in a month"),
+    ("H100", "Hopper", 2022, 2.82, 6.4, 7.15, 2.81, "Hyperscalers charge ~2.5x the neocloud rate"),
+    ("MI300X", "AMD CDNA 3", 2023, 2.64, 0.0, None, None, "Cheapest current-gen accelerator; ROCm limits porting"),
+    ("A100", "Ampere", 2020, 1.53, -3.2, 3.77, 0.97, "Two generations old, still above $1/hr"),
+]
+
+# Compute Desk B300 index (DESKB300). First and last points are stated on the Bloomberg chart;
+# the ones in between (marked ~) are read off the chart and approximate.
+DESK_B300 = [
+    ("2025-11-03", 4.551, "52-week low"), ("2025-12-01", 4.83, "~"), ("2026-01-02", 4.86, "~"),
+    ("2026-02-02", 4.94, "~"), ("2026-03-02", 5.21, "~"), ("2026-04-01", 5.64, "~"),
+    ("2026-04-15", 5.99, "~ spring peak"), ("2026-05-01", 4.96, "~"), ("2026-05-15", 4.85, "~"),
+    ("2026-06-01", 5.35, "~"), ("2026-07-01", 5.35, "~"), ("2026-08-03", 6.36, "~"),
+    ("2026-09-01", 6.38, "~"), ("2026-09-15", 5.91, "~ September dip"),
+    ("2026-10-14", 7.4534, "Record high, 17th straight daily gain"),
+]
+
+# Ornn B200 / H200 points (fallback when the live API is unreachable, and the pre-July history).
+ORNN_HISTORY = [
+    # gpu, date, $/GPU-hr, note, source
+    ("B200", "2026-03-02", 2.31, "Early March", TUNGUZ),
+    ("B200", "2026-04-27", 4.95, "Week of Apr 27", TUNGUZ),
+    ("B200", "2026-08-31", 6.07, "August month-end", ORNN_B200),
+    ("B200", "2026-09-30", 8.09, "September month-end", ORNN_B200),
+    ("B200", "2026-10-11", 7.45, "", ORNN_B200), ("B200", "2026-10-12", 7.33, "", ORNN_B200),
+    ("B200", "2026-10-13", 7.83, "", ORNN_B200), ("B200", "2026-10-14", 7.88, "", ORNN_B200),
+    ("B200", "2026-10-15", 7.92, "", ORNN_B200), ("B200", "2026-10-16", 8.12, "", ORNN_B200),
+    ("B200", "2026-10-17", 8.48, "Latest settle", ORNN_B200),
+    ("H200", "2026-08-31", 4.42, "August month-end", ORNN_H200),
+    ("H200", "2026-09-30", 5.58, "September month-end", ORNN_H200),
+    ("H200", "2026-10-11", 5.61, "", ORNN_H200), ("H200", "2026-10-12", 5.24, "", ORNN_H200),
+    ("H200", "2026-10-13", 5.51, "", ORNN_H200), ("H200", "2026-10-14", 6.12, "", ORNN_H200),
+    ("H200", "2026-10-15", 6.51, "", ORNN_H200), ("H200", "2026-10-16", 6.34, "", ORNN_H200),
+    ("H200", "2026-10-17", 6.39, "Latest settle", ORNN_H200),
+]
+
+# Plain-English guide to the chips on the Compute prices page, newest first.
+# Announced = when the maker unveiled it; shipping = when it reached customers in volume.
+CHIP_GUIDE = [
+    # chip, maker, family (generation), announced, shipping in volume, memory, what it is
+    ("B300", "Nvidia", "Blackwell Ultra", "Mar 2025", "Late 2025", "288 GB",
+     "Nvidia's newest and most powerful chip. An upgraded B200 with 50% more memory, built for "
+     "'reasoning' AI models that think through answers step by step."),
+    ("B200", "Nvidia", "Blackwell", "Mar 2024", "Early 2025", "192 GB",
+     "The generation after Hopper. Roughly 2–3 times faster than an H100 for training AI models, "
+     "and more for answering questions. What the big AI labs are buying now."),
+    ("H200", "Nvidia", "Hopper", "Nov 2023", "Mid 2024", "141 GB",
+     "Same processor as the H100 but with more and faster memory, so it handles bigger models. "
+     "A stopgap between Hopper and Blackwell."),
+    ("H100", "Nvidia", "Hopper", "Mar 2022", "Early 2023", "80 GB",
+     "The chip behind the post-ChatGPT boom and still the most widely installed AI chip. The "
+     "industry's reference price for renting compute."),
+    ("MI300X", "AMD", "CDNA 3 (AMD Instinct)", "Dec 2023", "Early 2024", "192 GB",
+     "AMD's main rival to the H100 and H200: lots of memory for the money, but it runs on AMD's own "
+     "software (ROCm) rather than Nvidia's (CUDA), so moving AI code onto it takes work."),
+    ("A100", "Nvidia", "Ampere", "May 2020", "Mid 2020", "40–80 GB",
+     "Two generations old. Trained GPT-3 and the first ChatGPT models. Still rented for smaller jobs; "
+     "its price is a gauge of whether old chips are piling up unused."),
+]

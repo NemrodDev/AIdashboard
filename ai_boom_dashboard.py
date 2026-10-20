@@ -11,11 +11,13 @@ Pages
                        ratings, token prices
   4. Leading signals   Nvidia, TSMC, Korean chip exports, memory prices, AI-lab revenue,
                        token volume, business AI adoption
-  5. Labor market      Young-worker and tech unemployment/employment, software postings,
+  5. Compute prices    GPU rental prices by chip: B300 record (Compute Desk), Silicon Data
+                       neocloud/hyperscaler indices, Ornn daily index (live, public API)
+  6. Labor market      Young-worker and tech unemployment/employment, software postings,
                        AI-attributed job cuts
 
 Live data: FRED (BEA, Census, Fed, BLS, ICE BofA, Indeed), Our World in Data (data center
-construction), Financial Modeling Prep if you add a key (otherwise Yahoo Finance via yfinance).
+construction), Ornn GPU rental index (public API, trailing 3 months), Financial Modeling Prep if you add a key (otherwise Yahoo Finance via yfinance).
 Figures without a free feed live in ai_boom_reference.py, each with its source.
 
 Run:   py -m streamlit run ai_boom_dashboard.py
@@ -35,6 +37,7 @@ import requests
 import streamlit as st
 
 import ai_boom_reference as ref
+import store
 
 # ---------------------------------------------------------------------------
 # Series definitions (FRED IDs)
@@ -105,6 +108,9 @@ CREDIT = {
     "BAMLC0A4CBBB": "BBB corporate OAS",
     "BAMLH0A0HYM2": "High-yield OAS",
 }
+TREASURY = {   # constant-maturity Treasury yields, % (for each bond's spread over Treasuries)
+    "DGS1": 1, "DGS2": 2, "DGS3": 3, "DGS5": 5, "DGS7": 7, "DGS10": 10, "DGS20": 20, "DGS30": 30,
+}
 LABOR = {
     "UNRATE": "Unemployment rate",
     "LNS14024887": "Unemployment rate, age 16-24",
@@ -116,6 +122,7 @@ LABOR = {
 SERIES_NAMES = {**NIPA_NOMINAL, **{k: v + " (real growth)" for k, v in NIPA_REAL_GROWTH.items()},
                 **{k: v + " (contribution)" for k, v in NIPA_CONTRIB.items()}, **NIPA_REAL_LEVELS,
                 **TRADE_NOMINAL, **GDP_GROWTH, **MONTHLY_REAL, **PRODUCTIVITY, **CREDIT, **LABOR,
+                **{k: f"{v}-year Treasury yield" for k, v in TREASURY.items()},
                 **{k: v + " (real index)" for k, v in NONRES_QTY.items()}, **NONRES_NOM}
 
 # The AI trade by segment (edit freely: each segment becomes an equal-weight basket)
@@ -167,6 +174,9 @@ FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 FRED_API = "https://api.stlouisfed.org/fred/series/observations"
 OWID_DC_CSV = "https://ourworldindata.org/grapher/monthly-spending-data-center-us.csv"
 FMP_BASE = "https://financialmodelingprep.com/stable"
+ORNN_API = "https://api.ornnai.com/api"
+ORNN_GPUS = {"B200": "B200", "H200": "H200", "H100": "H100 SXM", "A100": "A100 SXM4"}
+GPU_COLORS = {"B300": "#2a78d6", "B200": "#eb6834", "H200": "#1baf7a", "H100": "#eda100", "A100": "#8c6bd1"}
 BROWSER_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                    "(KHTML, like Gecko) Chrome/130.0 Safari/537.36"),
@@ -211,8 +221,54 @@ def _one_via_api(sid, start, api_key):
     return obs.dropna(subset=["value"])
 
 
-@st.cache_data(ttl=6 * 60 * 60, show_spinner="Downloading data from FRED...")
+FRED_FLOOR = "2010-01-01"     # every FRED group is saved from here (or earlier if a page asks for it)
+PRICE_FLOOR = "2014-12-01"    # prices are saved from here (the "Show data from" slider starts at 2015)
+
+
+def _stored(name: str, fetch, spinner: str, label: str = ""):
+    """Saved copy from ai-capex\\data, or download (with a spinner) if it's older than the last 5 pm ET."""
+    if store.fresh(name):
+        return store.get(name, fetch, label)
+    with st.spinner(spinner):
+        return store.get(name, fetch, label)
+
+
 def load_series(ids: tuple, start: str, api_key: str = "") -> tuple:
+    """(long frame from `start`, failed IDs). The whole history from FRED_FLOOR is saved on disk and
+    refreshed once a day, so moving the "Show data from" slider never downloads anything."""
+    fetch_start = min(start, FRED_FLOOR)
+    name = "fred_" + store.key(tuple(sorted(ids)), fetch_start)
+    df, failed = _stored(name, lambda: _topup_series(name, ids, fetch_start, api_key),
+                         "Updating data from FRED (once a day)...", label=",".join(ids)[:200])
+    return df[df["date"] >= pd.Timestamp(start)], failed
+
+
+FRED_RECENT_YEARS = 3     # each daily top-up re-reads this much, so recent revisions are picked up
+FRED_FULL_DAYS = 30       # and the whole history is re-read once a month, for BEA's annual and comprehensive revisions
+
+
+def _topup_series(name: str, ids: tuple, fetch_start: str, api_key: str):
+    """First time (or once a month): the whole history. Otherwise only the last FRED_RECENT_YEARS, merged into
+    the saved copy; series that fail to download keep their saved values."""
+    old = store.load(name) if store.exists(name) else None
+    full_at = store.meta(name).get("full_at")
+    stale = (not full_at or
+             (store.now_et() - pd.Timestamp(full_at).to_pydatetime()).days >= FRED_FULL_DAYS)
+    if old is None or stale:
+        df, failed = _download_series(ids, fetch_start, api_key)
+        return store.WithMeta((df, failed), full_at=store.now_et().isoformat(timespec="seconds"))
+    recent = max(fetch_start, f"{date.today().year - FRED_RECENT_YEARS}-01-01")
+    new, _ = _download_series(ids, recent, api_key)       # raises if nothing came back: the old copy is kept
+    odf = old[0]
+    got = set(new["series"])
+    odf = odf.assign(date=pd.to_datetime(odf["date"]))
+    new = new.assign(date=pd.to_datetime(new["date"]))
+    merged = pd.concat([odf[~odf["series"].isin(got) | (odf["date"] < pd.Timestamp(recent))], new],
+                       ignore_index=True).sort_values(["series", "date"]).reset_index(drop=True)
+    return merged, [s for s in ids if s not in set(merged["series"])]
+
+
+def _download_series(ids: tuple, start: str, api_key: str = "") -> tuple:
     """Returns (long frame, list of series that failed). A bad or discontinued ID
     doesn't take the others down with it."""
     frames, failed = [], []
@@ -265,19 +321,23 @@ def ser(df: pd.DataFrame, sid: str) -> pd.Series:
 # ---------------------------------------------------------------------------
 # Data: Our World in Data (data center construction)
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=12 * 60 * 60, show_spinner="Downloading data center construction...")
+def _download_data_centers() -> pd.DataFrame:
+    resp = _get(OWID_DC_CSV, {"v": 1, "csvType": "full", "useColumnShortNames": "false"},
+                headers=BROWSER_HEADERS, tries=2, timeout=(10, 30))
+    d = pd.read_csv(io.StringIO(resp.text))
+    d = d[d["Entity"] == "United States"]
+    val_col = [c for c in d.columns if c not in ("Entity", "Code", "Month", "Year", "Day")][0]
+    out = pd.DataFrame({"date": pd.to_datetime(d["Month"].astype(str).str[:7] + "-01"),
+                        "value": pd.to_numeric(d[val_col], errors="coerce") / 1e9})
+    return out.dropna().sort_values("date")
+
+
 def load_data_centers() -> tuple:
     """Monthly private data center construction, $B constant 2021 dollars, not seasonally adjusted.
-    Falls back to the snapshot in ai_boom_reference.py."""
+    Saved on disk and refreshed once a day; falls back to the snapshot in ai_boom_reference.py."""
     try:
-        resp = _get(OWID_DC_CSV, {"v": 1, "csvType": "full", "useColumnShortNames": "false"},
-                    headers=BROWSER_HEADERS, tries=2, timeout=(10, 30))
-        d = pd.read_csv(io.StringIO(resp.text))
-        d = d[d["Entity"] == "United States"]
-        val_col = [c for c in d.columns if c not in ("Entity", "Code", "Month", "Year", "Day")][0]
-        out = pd.DataFrame({"date": pd.to_datetime(d["Month"].astype(str).str[:7] + "-01"),
-                            "value": pd.to_numeric(d[val_col], errors="coerce") / 1e9})
-        return out.dropna().sort_values("date"), "live"
+        return _stored("owid_data_centers", _download_data_centers,
+                       "Updating data center construction (once a day)..."), "live"
     except Exception:
         snap = pd.DataFrame(ref.DC_SNAPSHOT, columns=["month", "value"])
         snap["date"] = pd.to_datetime(snap["month"] + "-01")
@@ -287,17 +347,93 @@ def load_data_centers() -> tuple:
 # ---------------------------------------------------------------------------
 # Data: stock prices and cash flows (FMP if a key is set, else Yahoo Finance)
 # ---------------------------------------------------------------------------
+FMP_DOWN = {"why": ""}   # set when FMP refuses (rate limit or plan); later calls skip FMP straight to Yahoo
+
+
 def _fmp(path, params, key):
-    resp = _get(f"{FMP_BASE}/{path}", {**params, "apikey": key}, tries=2, timeout=(10, 30))
+    if FMP_DOWN["why"]:
+        raise RuntimeError(f"FMP skipped: {FMP_DOWN['why']}")
+    try:
+        resp = _get(f"{FMP_BASE}/{path}", {**params, "apikey": key}, tries=1, timeout=(10, 30))
+    except requests.HTTPError as e:
+        code = getattr(e.response, "status_code", None)
+        if code in (401, 402, 403, 429):
+            FMP_DOWN["why"] = f"HTTP {code}"     # don't wait on FMP again for the other tickers
+        raise RuntimeError(f"FMP HTTP {code}") from None
     data = resp.json()
     if isinstance(data, dict) and ("Error Message" in data or "error" in data):
         raise RuntimeError(str(data)[:200])
     return data
 
 
-@st.cache_data(ttl=30 * 60, show_spinner="Fetching stock prices...")
 def load_prices(tickers: tuple, start: str, fmp_key: str = "") -> tuple:
+    """Daily closes from `start` for `tickers`: (frame, {symbol: source}, failed). All segment stocks and
+    benchmark funds are saved together on disk; any other ticker is saved on its own. Refreshed once a day
+    after the close."""
+    base = tuple(dict.fromkeys(list(AI_TICKERS) + list(AI_ETFS)))
+    nb = "prices_base_" + store.key(base)
+    parts = [_stored(nb, lambda: _topup_prices(nb, base, fmp_key),
+                     "Updating stock prices (once a day, after the close)...")]
+    for t in tickers:
+        if t not in base:
+            nt = "prices_" + re.sub(r"[^A-Za-z0-9]", "_", t)
+            parts.append(_stored(nt, lambda t=t, nt=nt: _topup_prices(nt, (t,), fmp_key), f"Updating {t} prices..."))
+    frames = [p[0] for p in parts if not p[0].empty]
+    src = {k: v for p in parts for k, v in p[1].items()}
+    px = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["date", "symbol", "close"])
+    px = px[px["symbol"].isin(tickers) & (px["date"] >= pd.Timestamp(start))]
+    return px, {k: v for k, v in src.items() if k in tickers}, [t for t in tickers if t not in set(px["symbol"])]
+
+
+PRICE_OVERLAP_DAYS = 7     # each top-up re-reads the last week, to catch late corrections
+ADJUST_TOLERANCE = 0.005   # a saved close that moved more than 0.5% means a split or dividend re-adjusted history
+
+
+def _topup_prices(name: str, tickers: tuple, fmp_key: str = "") -> tuple:
+    """First time: full history from PRICE_FLOOR. After that, only from a week before the last saved day,
+    added to the saved copy. A ticker whose overlapping closes changed (a split or dividend re-adjusts past
+    prices), that is new, or whose data is more than a month old gets its full history again."""
+    empty = pd.DataFrame(columns=["date", "symbol", "close"])
+    old = store.load(name) if store.exists(name) else None
+    if old is None or old[0].empty:
+        return _download_prices(tickers, PRICE_FLOOR, fmp_key)
+    opx, osrc, _ = old
+    opx = opx.assign(date=pd.to_datetime(opx["date"]))
+    new_dates = lambda f: f.assign(date=pd.to_datetime(f["date"])) if not f.empty else f  # noqa: E731
+    last = opx.groupby("symbol")["date"].max()
+    newest = last.max()
+    current = [t for t in tickers if t in last.index and last[t] >= newest - pd.Timedelta(days=30)]
+    redo = [t for t in tickers if t not in current]
+    if current:
+        start = min(last[current]) - pd.Timedelta(days=PRICE_OVERLAP_DAYS)
+        new, nsrc, _ = _download_prices(tuple(current), start.strftime("%Y-%m-%d"), fmp_key)
+        new = new_dates(new)
+    else:
+        start, new, nsrc = newest, empty, {}
+    if current and new.empty:
+        raise RuntimeError("no new prices came back")          # keep the saved copy as it is
+    for t in current:
+        ov = new[new["symbol"] == t].merge(opx[opx["symbol"] == t], on=["date", "symbol"], suffixes=("", "_old"))
+        if len(ov) and ((ov["close"] / ov["close_old"] - 1).abs().max() > ADJUST_TOLERANCE):
+            redo.append(t)
+    full, fsrc, _ = _download_prices(tuple(redo), PRICE_FLOOR, fmp_key) if redo else (empty, {}, [])
+    full = new_dates(full)
+    missing_new = [t for t in current if t not in set(new["symbol"]) and t not in redo]
+    keep = opx[(opx["symbol"].isin(missing_new))                                      # no new data: keep all
+               | (opx["symbol"].isin(current) & ~opx["symbol"].isin(redo + missing_new) & (opx["date"] < start))
+               | (opx["symbol"].isin(redo) & ~opx["symbol"].isin(set(full["symbol"])))]  # full re-read failed
+    parts = [f for f in (keep, new[~new["symbol"].isin(redo)], full) if not f.empty]
+    out = pd.concat(parts, ignore_index=True) if parts else empty.copy()
+    out["date"] = pd.to_datetime(out["date"])
+    out["close"] = pd.to_numeric(out["close"], errors="coerce")
+    out = out.drop_duplicates(["symbol", "date"], keep="last").sort_values(["symbol", "date"]).reset_index(drop=True)
+    src = {**osrc, **nsrc, **fsrc}
+    return out, {t: v for t, v in src.items() if t in set(out["symbol"])}, [t for t in tickers if t not in set(out["symbol"])]
+
+
+def _download_prices(tickers: tuple, start: str, fmp_key: str = "") -> tuple:
     """Daily closes, long frame: date, symbol, close. Returns (frame, {symbol: source}, failed)."""
+    FMP_DOWN["why"] = ""          # give FMP one fresh try per download
     frames, src, todo = [], {}, list(tickers)
     if fmp_key:
         for t in tickers:
@@ -338,9 +474,15 @@ def load_prices(tickers: tuple, start: str, fmp_key: str = "") -> tuple:
     return pd.concat(frames, ignore_index=True).dropna(), src, todo
 
 
-@st.cache_data(ttl=6 * 60 * 60, show_spinner="Fetching cash-flow statements...")
 def load_cash_flows(tickers: tuple, fmp_key: str = "") -> tuple:
+    """Quarterly cash flows, saved on disk and refreshed once a day."""
+    return _stored("cashflows_" + store.key(tickers), lambda: _download_cash_flows(tickers, fmp_key),
+                   "Updating cash-flow statements (once a day)...")
+
+
+def _download_cash_flows(tickers: tuple, fmp_key: str = "") -> tuple:
     """Quarterly capex, operating cash flow, free cash flow, net debt issued ($B)."""
+    FMP_DOWN["why"] = ""          # give FMP one fresh try per download
     rows, src = [], {}
     for t in tickers:
         got = False
@@ -473,6 +615,40 @@ def notches_above_junk(sp: str, moodys: str = "—"):
         if rating in scale:
             return 9 - scale.index(rating)
     return None
+
+
+def bond_spreads(tsy: pd.DataFrame) -> pd.DataFrame:
+    """ref.AI_BONDS as a frame, with years to maturity and, where a market yield is known, the spread over
+    the Treasury curve (FRED constant-maturity yields, interpolated to the bond's maturity, capped at 30y)
+    on the date of the bond's price."""
+    cols = ["Issuer", "Group", "Instrument", "Rate", "Type", "Coupon", "mat", "Maturity", "Amount", "Secured",
+            "Price", "Yield %", "asof", "source"]
+    b = pd.DataFrame(ref.AI_BONDS, columns=cols)
+    b["mat"] = pd.to_datetime(b["mat"], errors="coerce")
+    b["asof"] = pd.to_datetime(b["asof"], errors="coerce")
+    wide = (tsy.pivot_table(index="date", columns="series", values="value").sort_index().ffill()
+            if not tsy.empty else pd.DataFrame())
+    tenors = sorted((y, sid) for sid, y in TREASURY.items() if sid in wide)
+    tsy_y, spread = [], []
+    for _, r in b.iterrows():
+        ytm, asof, mat = r["Yield %"], r["asof"], r["mat"]
+        if ytm is None or pd.isna(ytm) or pd.isna(asof) or pd.isna(mat) or not tenors:
+            tsy_y.append(None); spread.append(None); continue
+        row = wide[wide.index <= asof]
+        if row.empty:
+            tsy_y.append(None); spread.append(None); continue
+        row = row.iloc[-1]
+        yrs = min(30.0, max(1.0, (mat - asof).days / 365.25))
+        xs = [t for t, _ in tenors]; ys = [float(row[sid]) for _, sid in tenors]
+        curve = pd.Series(ys, index=[float(x) for x in xs])
+        ty = float(curve.reindex(sorted(set(curve.index) | {yrs})).interpolate(method="index")[yrs])
+        tsy_y.append(ty); spread.append((float(ytm) - ty) * 100)
+    b["Treasury %"] = tsy_y
+    b["Spread, bp"] = spread
+    b["Years"] = ((b["mat"] - pd.Timestamp.today()).dt.days / 365.25).round(1)
+    b["Secured"] = b["Secured"].map({True: "Secured", False: "Unsecured"})
+    b["Priced"] = b["asof"].dt.strftime("%b %d, %Y").fillna("—")
+    return b
 
 
 def yoy(s: pd.Series, periods: int) -> pd.Series:
@@ -718,6 +894,28 @@ def html_table(data, bold_rows=(), hide_index=False, max_height=None):
         styler = styler.apply(lambda r: ["font-weight: 700" if r.name in bold_rows else "" for _ in r], axis=1)
     box = "overflow-x: auto;" + (f" max-height: {max_height}px; overflow-y: auto;" if max_height else "")
     st.html(f'<div style="{box}">{styler.to_html()}</div>')
+
+
+_DOWNLOADS = itertools.count()  # unique keys for download buttons
+
+
+def chart_csv(chart, data=None) -> pd.DataFrame:
+    """The data behind a chart, for the Download CSV button: explicit data if given, else the
+    chart's own data frame (or the largest one among its layers)."""
+    if isinstance(data, pd.DataFrame):
+        return data
+    frames = []
+    stack = [chart]
+    while stack:
+        c = stack.pop()
+        d = getattr(c, "data", None)
+        if isinstance(d, pd.DataFrame):
+            frames.append(d)
+        stack.extend(getattr(c, "layer", None) or [])
+        stack.extend(getattr(c, "vconcat", None) or [])
+        stack.extend(getattr(c, "hconcat", None) or [])
+    frames = [f for f in frames if not f.empty]
+    return max(frames, key=len) if frames else pd.DataFrame()
 
 
 def show(chart=None, name="chart_data", data=None):
@@ -1159,8 +1357,9 @@ def firm_page():
 # ---------------------------------------------------------------------------
 def markets_page():
     st.title("Financial markets: stocks and credit")
-    st.caption("Daily closes from FMP (with a key) or Yahoo Finance; ICE BofA option-adjusted spreads via FRED; "
-               f"ratings, CDS and hyperscaler spreads are reference figures as of {ref.AS_OF}.")
+    st.caption("Daily closes from FMP (with a key) or Yahoo Finance and ICE BofA option-adjusted spreads via FRED, "
+               "saved and updated once a day after the close. Single-company CDS, bond prices and ratings have no "
+               "free daily feed: they are the latest published readings, each shown with its own date.")
     with st.sidebar:
         segs = st.multiselect("Segments in the stock table", list(AI_SEGMENTS), default=DEFAULT_SEGMENTS,
                               key="mk_segments")
@@ -1318,18 +1517,54 @@ def markets_page():
     o = ref.CDS_5Y["Oracle"]
     tile(c[3], f"Oracle 5-yr CDS, {o[2]}", f"{o[1]}bp", f"{o[0] - o[3]:+.0f}bp since start of 2026",
          delta_color="inverse", help=ref.ORACLE_CDS["note"])
-    l, r = st.columns([3, 2])
-    with l:
-        show(name="credit_spreads", chart=line_chart(window(to_long(spreads)), fmt=",.0f", y_title="Basis points over Treasuries", height=320,
-                        colors=[BLUE, ORANGE, BAD]))
-        st.caption("Hyperscalers sit in the AA bucket, except Oracle (BBB−). High yield shown for context.")
-    with r:
-        hs = pd.DataFrame([(b, y, v) for b, a, c2 in ref.HYPERSCALER_SPREADS for y, v in [("2025", a), ("2026", c2)]],
-                          columns=["Maturity", "Year", "bp"])
-        show(name="hyperscaler_bond_spreads", chart=grouped_bars(hs, "Maturity", "Year", "bp", ["2025", "2026"], [MA_COLOR, BLUE], fmt=",.4~f",
-                          x_title="Median spread, bp"))
-        st.caption("Median spreads on Amazon, Alphabet, Meta and Oracle bonds, 2025 vs 2026 issues, and the "
-                   "new-issue concession. 78 of 91 2026 bonds traded wider than at issue (Jul 28).")
+    show(name="credit_spreads", chart=line_chart(window(to_long(spreads)), fmt=",.0f", y_title="Basis points over Treasuries", height=320,
+                    colors=[BLUE, ORANGE, BAD]))
+    st.caption("Hyperscalers sit in the AA bucket, except Oracle (BBB−). High yield shown for context.")
+
+    # --- Bond by bond: hyperscalers, neoclouds and other AI borrowers ------------------------
+    tsy, _ = load_series(tuple(TREASURY), "2025-01-01", fred_key)
+    bonds = bond_spreads(tsy)
+    st.markdown("**AI borrowers' bonds: latest spread over Treasuries, bond by bond**")
+    grp = st.segmented_control("Borrowers", ["All", "Hyperscalers", "Neoclouds & AI"], default="All",
+                               key="mk_bond_grp", label_visibility="collapsed") or "All"
+    bv = bonds if grp == "All" else bonds[bonds["Group"] == grp]
+    priced = bv.dropna(subset=["Spread, bp"]).copy()
+    if not priced.empty:
+        priced["Bond"] = (priced["Issuer"] + " " + priced["Coupon"].map(lambda c: f"{c:g}%")
+                          + " " + priced["Maturity"].str[-4:])
+        priced = priced.sort_values("Spread, bp", ascending=False)
+        y = alt.Y("Bond:N", sort=priced["Bond"].tolist(), title=None,
+                  axis=alt.Axis(labelLimit=1000, labelOverlap=False, labelFontSize=12))
+        tip = ["Bond:N", "Rate:N", "Type:N", "Maturity:N", alt.Tooltip("Price:Q", format=".2f"),
+               alt.Tooltip("Yield %:Q", format=".2f"), alt.Tooltip("Treasury %:Q", format=".2f", title="Treasury, same maturity %"),
+               alt.Tooltip("Spread, bp:Q", format=",.0f"), "Priced:N"]
+        bars = alt.Chart(priced).mark_bar(height=16).encode(
+            y=y, x=alt.X("Spread, bp:Q", title="Spread over Treasuries of the same maturity, bp (on the price date)"),
+            color=alt.Color("Group:N", scale=alt.Scale(domain=["Hyperscalers", "Neoclouds & AI"], range=[BLUE, ORANGE]),
+                            legend=alt.Legend(title=None, orient="top")),
+            tooltip=tip)
+        lab = alt.Chart(priced).mark_text(align="left", dx=4, fontSize=11, color=LABEL_INK).encode(
+            y=y, x="Spread, bp:Q",
+            text=alt.Text("lab:N"),
+        ).transform_calculate(lab="format(datum['Spread, bp'], ',.0f') + 'bp · ' + datum.Rate + ' · ' + datum.Priced")
+        show(name="ai_bond_spreads", data=priced.drop(columns=["source"]),
+             chart=axis_cfg((bars + lab).properties(height=30 * len(priced) + 70)))
+        st.caption("Each bar is one bond: its yield to maturity minus the Treasury yield for the same maturity on the "
+                   "day it was priced (FRED constant-maturity curve, interpolated; 30-year for longer bonds). Labels "
+                   "show the coupon and the price date. Prices are the latest published readings (no free daily bond "
+                   "feed): Big Tech and SpaceX long bonds from a TradingView screen on Oct 5, Oracle 2046 Oct 1, "
+                   "CoreWeave 2032 Oct 19.")
+
+    st.markdown("**Terms of AI-related debt: fixed vs floating, coupon, maturity, security**")
+    terms = bv[["Issuer", "Instrument", "Rate", "Type", "Maturity", "Amount", "Secured", "Price", "Yield %",
+                "Spread, bp", "Priced"]].copy()
+    terms = terms.sort_values(["Issuer", "Type", "Maturity"])
+    html_table(terms.style.format({"Price": "{:.2f}", "Yield %": "{:.2f}", "Spread, bp": "{:,.0f}"}, na_rep="—"),
+               hide_index=True, max_height=480)
+    st.caption("Floating = rate resets with SOFR, so the cost rises and falls with short-term rates; the margin over "
+               "SOFR is the credit spread fixed at signing. Most neocloud debt is floating-rate loans secured by GPUs "
+               "and customer contracts, which have no public market price. CoreWeave's unsecured bonds are the "
+               "traded benchmark. Edit AI_BONDS in ai_boom_reference.py to add bonds or new prices.")
 
     st.markdown("**Credit ratings and 5-year CDS across the AI trade**")
     rows = []
@@ -1338,6 +1573,7 @@ def markets_page():
         rows.append({"Company": co, "Segment": seg, "S&P": sp, "Moody's": md, "Fitch": fi,
                      "Notches above junk": notches_above_junk(sp, md),
                      "5-yr CDS, bp": latest_lab, "CDS as of": cds_date or "—",
+                     "Latest CDS news": ref.CDS_NOTES.get(co, ""),
                      "Early 2026, bp": base, "Baseline date": base_date or "—",
                      "Change, bp": (latest - base) if latest is not None and base is not None else None,
                      "Rating as of": asof, "Note": note})
@@ -1378,11 +1614,13 @@ def markets_page():
                .map(junk_red, subset=["Notches above junk"]).map(widen_red, subset=["Change, bp"]), hide_index=True)
     st.caption("Notches above junk use S&P's rating (Moody's where S&P is missing): 0 = BBB−, the last step before "
                "junk; negative = junk. CDS = yearly cost to insure $10M of debt, in bp; red = wider since the baseline. "
-               "Dealer CDS quotes aren't free, so these are the latest levels reported in the press (late July 2026); "
-               "Alphabet, Amazon and Microsoft baselines are mid-Nov 2025 readings. Edit RATINGS and CDS_5Y in "
-               "ai_boom_reference.py to update.")
+               "Dealer CDS quotes aren't free, so these are the latest levels published in the press, each with its "
+               "date: Oracle and CoreWeave Oct 19, 2026. Amazon, Alphabet, Meta and Nvidia hit record highs on Oct 15 "
+               "but their levels weren't published, so their numbers are still late-July readings. Alphabet, Amazon and "
+               "Microsoft baselines are mid-Nov 2025. Edit RATINGS and CDS_5Y in ai_boom_reference.py to update.")
 
-    sources_box(tuple(CREDIT), refs=[ref.REUTERS_SPREADS, ref.ORACLE_CDS["source"], ref.CDS_BASELINE_SOURCE]
+    sources_box(tuple(CREDIT) + tuple(TREASURY), refs=[ref.CDS_OCT15, ref.REUTERS_SPREADS, ref.ORACLE_CDS["source"], ref.CDS_BASELINE_SOURCE]
+                + list(dict.fromkeys(b[13] for b in ref.AI_BONDS))
                 + list(dict.fromkeys(v[5] for v in ref.CDS_5Y.values()))
                 + list(dict.fromkeys(r[7] for r in ref.RATINGS)),
                 notes=[f"**{seg}:** " + ", ".join(f"{t} ({n})" for t, n in m.items()) for seg, m in AI_SEGMENTS.items()]
@@ -1568,7 +1806,153 @@ def leading_page():
 
 
 # ---------------------------------------------------------------------------
-# Page 5: Labor market
+# Page 5: Compute prices
+# ---------------------------------------------------------------------------
+def load_ornn() -> tuple:
+    """Daily Ornn index (saved on disk, refreshed once a day after 5 pm ET). Returns (frame, error or "")."""
+    try:
+        return _stored("ornn_gpu_index", _download_ornn, "Updating the GPU rental index (once a day)...")
+    except Exception as e:  # nothing saved yet and the API is down: the page falls back to saved readings
+        return pd.DataFrame(columns=["gpu", "date", "value"]), str(e)
+
+
+def _download_ornn() -> tuple:
+    """Daily Ornn index for each GPU on the public API (no key; trailing 3 months).
+    Returns (long frame gpu/date/value, error message or "")."""
+    frames, errs = [], []
+    for chip, name in ORNN_GPUS.items():
+        try:
+            r = requests.get(f"{ORNN_API}/gpu/{requests.utils.quote(name)}/index-history",
+                             headers=BROWSER_HEADERS, timeout=(10, 30))
+            r.raise_for_status()
+            rows = r.json().get("data") or []
+            d = pd.DataFrame(rows)
+            if d.empty or not {"timestamp", "index_value"} <= set(d.columns):
+                raise ValueError("empty response")
+            d = pd.DataFrame({"gpu": chip,
+                              "date": pd.to_datetime(d["timestamp"], utc=True).dt.tz_localize(None).dt.normalize(),
+                              "value": pd.to_numeric(d["index_value"], errors="coerce")}).dropna()
+            frames.append(d.groupby(["gpu", "date"], as_index=False)["value"].last())
+        except Exception as e:  # network, rate limit, schema change
+            errs.append(f"{chip}: {e}")
+    if not frames:
+        raise RuntimeError("; ".join(errs) or "no data")   # keep the last saved copy instead
+    out = pd.concat(frames, ignore_index=True)
+    return out.sort_values(["gpu", "date"]), "; ".join(errs)
+
+
+def compute_page():
+    st.title("Compute prices: what it costs to rent an AI chip")
+    st.caption("On-demand rental price per GPU-hour. Rising prices mean demand is outrunning new supply; falling "
+               "prices on older chips would be the first sign of a glut. Indices differ in method (Silicon Data "
+               "standardizes a blend of rentals, Ornn publishes a daily settle, Compute Desk uses verified US "
+               "neocloud transactions), so compare trends within a source rather than levels across them. "
+               f"Reference readings as of {ref.COMPUTE_AS_OF}.")
+    latest = pd.DataFrame(ref.GPU_RENTAL_LATEST, columns=["Chip", "Generation", "Launched", "Neocloud",
+                                                          "7-day %", "Hyperscaler", "Ornn", "Note"])
+    desk = pd.DataFrame(ref.DESK_B300, columns=["date", "value", "note"])
+    desk["date"] = pd.to_datetime(desk["date"])
+    live, err = load_ornn()
+
+    # Ornn: live where the API answered, saved points for the rest and for the earlier history.
+    saved = pd.DataFrame([(g, d, v) for g, d, v, _, _ in ref.ORNN_HISTORY], columns=["gpu", "date", "value"])
+    saved["date"] = pd.to_datetime(saved["date"])
+    if not live.empty:
+        cut = live.groupby("gpu")["date"].min()
+        saved = saved[saved.apply(lambda r: r["gpu"] not in cut or r["date"] < cut[r["gpu"]], axis=1)]
+    ornn = pd.concat([saved, live], ignore_index=True).sort_values(["gpu", "date"])
+    ornn_last = ornn.groupby("gpu").tail(1).set_index("gpu")
+    if not live.empty:
+        for chip, row in ornn_last.iterrows():
+            latest.loc[latest["Chip"] == chip, "Ornn"] = round(float(row["value"]), 2)
+
+    def ornn_chg(chip, days):
+        """Change over `days`; if no reading lies within 5 days of that, say which date it's measured from."""
+        s = ornn[ornn["gpu"] == chip].set_index("date")["value"]
+        target = s.index[-1] - pd.Timedelta(days=days) if len(s) else None
+        past = s[s.index <= target] if len(s) else s
+        if past.empty:
+            return None
+        chg = s.iloc[-1] / past.iloc[-1] - 1
+        near = (target - past.index[-1]).days <= 5
+        return f"{chg:+.1%} in {days} days" if near else f"{chg:+.1%} since {past.index[-1]:%b %d}"
+
+    c = st.columns(4)
+    lo, hi = desk.iloc[0], desk.iloc[-1]
+    tile(c[0], f"B300 (Compute Desk), {hi['date']:%b %d}", f"${hi['value']:.2f}",
+         f"{hi['value'] / lo['value'] - 1:+.0%} vs {lo['date']:%b %Y} low",
+         help="Record high after 17 straight daily gains, per the DESKB300 Bloomberg chart.")
+    for col, chip in zip(c[1:3], ["B200", "H200"]):
+        if chip in ornn_last.index:
+            tile(col, f"{chip} (Ornn), {ornn_last.loc[chip, 'date']:%b %d}", f"${ornn_last.loc[chip, 'value']:.2f}",
+                 ornn_chg(chip, 30))
+    h = latest.set_index("Chip").loc["H100"]
+    tile(c[3], "H100 (Silicon Data neocloud)", f"${h['Neocloud']:.2f}", f"{h['7-day %']:+.1f}% in 7 days",
+         help=f"Hyperscalers: ${h['Hyperscaler']:.2f}/hr.")
+    if err and live.empty:
+        st.caption("Couldn't reach Ornn's live API, so Ornn figures are the saved readings.")
+
+    st.subheader("Nvidia chips: newest rents at a record, every generation rising")
+    nv_order = ["B300", "B200", "H200", "H100", "A100"]          # newest to oldest
+    nv = pd.concat([desk[["date", "value"]].assign(Series="B300 (Compute Desk)")]
+                   + [ornn[ornn["gpu"] == g][["date", "value"]].assign(Series=f"{g} (Ornn)") for g in nv_order[1:]],
+                   ignore_index=True)
+    names = [n for n in [f"{g} ({'Compute Desk' if g == 'B300' else 'Ornn'})" for g in nv_order] if n in set(nv["Series"])]
+    show(name="nvidia_rental_prices", chart=line_chart(nv, fmt="$.2f", y_title="$ per GPU-hour", height=380,
+                                                        colors=[GPU_COLORS[n.split()[0]] for n in names]))
+    st.caption("Each line is one Nvidia chip, newest (B300, Blackwell Ultra) to oldest (A100, 2020). B300 is Compute "
+               "Desk's DESKB300 index (Bloomberg), from verified US neocloud transactions: the Nov 3, 2025 low and the "
+               "Oct 14, 2026 record are stated on its chart, the points between are read off it and approximate. The other "
+               "chips are Ornn's daily index, which starts in July on the free API (B200 has two spring readings via "
+               "Tomasz Tunguz), so their lines begin later. The two sources measure differently: compare each line's "
+               "trend rather than B300's level against the others. Silicon Data's standardized B300 index is $"
+               + f"{latest.set_index('Chip').loc['B300', 'Neocloud']:.2f}. AMD's MI300X isn't tracked daily; see the table.")
+
+    st.subheader("Every generation costs more to rent")
+    bars = latest.melt(id_vars="Chip", value_vars=["Neocloud", "Ornn"], var_name="Index", value_name="value").dropna()
+    bars["Index"] = bars["Index"].replace({"Neocloud": "Silicon Data neocloud"})
+    show(name="gpu_rental_by_chip", chart=grouped_bars(
+        bars, cat="Chip", group="Index", value="value", groups=["Silicon Data neocloud", "Ornn"],
+        colors=[BLUE, ORANGE], fmt="$.2f", x_title="$ per GPU-hour", sort=list(latest["Chip"])))
+    st.caption("Newest chip at the top. Ornn doesn't cover B300 or MI300X. New to these chips? See "
+               "\"What these chips are\" under the table below.")
+
+    st.subheader("Rental prices, newest to oldest chip")
+    tbl = latest.copy()
+    money = lambda v: "—" if pd.isna(v) else f"${v:.2f}"
+    for col_ in ["Neocloud", "Hyperscaler", "Ornn"]:
+        tbl[col_] = tbl[col_].map(money)
+    tbl["7-day %"] = tbl["7-day %"].map(lambda v: "—" if pd.isna(v) else f"{v:+.1f}%")
+    tbl = tbl.rename(columns={"Neocloud": "Silicon Data neocloud", "Hyperscaler": "Silicon Data hyperscaler",
+                              "7-day %": "SD 7-day"})
+    html_table(tbl, hide_index=True)
+    st.download_button("⬇ Download CSV", latest.to_csv(index=False).encode(),
+                       file_name=f"gpu_rental_latest_{date.today():%Y-%m-%d}.csv", mime="text/csv",
+                       key="dl_gpu_rental_latest")
+
+    st.markdown("**What these chips are**")
+    guide = pd.DataFrame(ref.CHIP_GUIDE, columns=["Chip", "Maker", "Generation", "Announced", "Shipping in volume",
+                                                  "Memory", "What it is"])
+    html_table(guide, hide_index=True)
+    st.caption("A GPU (graphics processing unit) is the chip that trains and runs AI models; companies rent them by "
+               "the hour from clouds rather than buying them outright. Nvidia names each generation after a scientist "
+               "(Ampere 2020, Hopper 2022, Blackwell 2024), and newer generations are faster, so each one rents for "
+               "more. Memory (HBM) decides how big a model fits on one chip, so more memory = bigger models. "
+               "**Neocloud** = specialist GPU renters such as CoreWeave, Nebius and Lambda; **hyperscaler** = Amazon, "
+               "Microsoft, Google and Oracle, which charge more but bundle in their other cloud services. A **GPU-hour** "
+               "is one chip rented for one hour; a large AI training run uses tens of thousands of chips for weeks.")
+    sources_box(refs=[ref.COMPUTE_DESK, ref.CRYPTOBRIEFING, ref.SILICON_INDEX, ref.SILICON_B300, ref.ORNN,
+                      ref.ORNN_B200, ref.ORNN_H200, ref.TUNGUZ],
+                notes=["Live: Ornn public API (api.ornnai.com, no key) for B200, H200, H100 SXM and A100 SXM4. "
+                       "Saved once a day with the rest of the data. Everything else is in ai_boom_reference.py; update GPU_RENTAL_LATEST and DESK_B300 there.",
+                       "Silicon Data's full daily history and the Compute Desk series are on Bloomberg "
+                       "(SDH100RT, SDA100RT, SDB200RT, DESKB300 Index) or by subscription."])
+
+
+
+
+# ---------------------------------------------------------------------------
+# Page 6: Labor market
 # ---------------------------------------------------------------------------
 def labor_page():
     st.title("Labor market impact")
@@ -1654,8 +2038,13 @@ with st.sidebar:
                             placeholder="Using the saved key" if srv_fmp else "Paste your key",
                             help="Financial Modeling Prep, for stock prices and cash flows. Without it (or for "
                                  "symbols your plan doesn't cover) the app uses Yahoo Finance. Or set FMP_API_KEY.").strip() or srv_fmp
-    if st.button("Refresh data"):
+    if st.button("Refresh data", help="Download everything again now. Otherwise data updates once a day "
+                                      "after 5 pm ET (the first visit after that downloads only what's new)."):
+        store.forget_all()
         st.cache_data.clear()
+    _lr = store.last_refresh()
+    st.caption((f"Data saved {_lr:%a %b %d, %I:%M %p} ET" if _lr else "No data saved yet")
+               + f" · next update after {store.next_cutoff():%a %b %d}, 5 pm ET")
     st.divider()
     st.header("Settings")
     start_year = st.slider("Show data from", 2015, date.today().year, 2022, key="start_year",
@@ -1666,6 +2055,7 @@ pages = st.navigation([
     st.Page(firm_page, title="Firm level", url_path="firms"),
     st.Page(markets_page, title="Financial markets", url_path="markets"),
     st.Page(leading_page, title="Leading signals", url_path="leading"),
+    st.Page(compute_page, title="Compute prices", url_path="compute"),
     st.Page(labor_page, title="Labor market", url_path="labor"),
 ])
 pages.run()
